@@ -2,18 +2,7 @@
 
 A terminal UI tool for visually reviewing git diffs and interactively staging changes.
 
-```
-┌─────────────────┬──────────────────────────────────────────────────┐
-│   File Tree     │                   Diff View                       │
-│                 │                                                    │
-│ ▼ src/          │ @@ -10,7 +10,9 @@                                 │
-│   ├─ main.rs  M │  context line                                     │
-│   └─ lib.rs   A │ -removed line                                     │
-│ ▶ tests/        │ +added line                                       │
-│                 │  context line                                     │
-└─────────────────┴──────────────────────────────────────────────────┘
- tool:raw  [a]add [r]revert [A]add-all [v]line-select [q]quit
-```
+![image](images/Screenshot.png)
 
 ## Installation
 
@@ -37,12 +26,6 @@ cp target/release/diffview ~/.local/bin/
 # Open the git repository in the current directory
 diffview
 
-# Open a specific repository
-diffview /path/to/repo
-
-# Show only staged changes
-diffview --staged
-
 # Specify a diff tool
 diffview --tool delta
 diffview --tool difftastic
@@ -53,50 +36,42 @@ diffview --tool raw        # default
 
 ### Global
 
-| Key   | Action                             |
-| ----- | ---------------------------------- |
-| `Tab` | Switch focus between tree and diff |
-| `?`   | Show key binding help              |
-| `q`   | Quit                               |
+| Key     | Action                             |
+| ------- | ---------------------------------- |
+| `h` `l` | Switch focus between tree and diff |
+| `?`     | Show key binding help              |
+| `q`     | Quit                               |
 
 ### File Tree (left pane)
 
-| Key       | Action                                  |
-| --------- | --------------------------------------- |
-| `j` / `↓` | Move down                               |
-| `k` / `↑` | Move up                                 |
-| `Enter`   | Show diff for the selected file         |
-| `Space`   | Toggle directory fold                   |
-| `a`       | `git add` selected file / directory     |
-| `r`       | `git restore` selected file / directory |
+| Key       | Action                          |
+| --------- | ------------------------------- |
+| `j` / `↓` | Move down                       |
+| `k` / `↑` | Move up                         |
+| `l`       | Show diff for the selected file |
+| `Enter`   | Stage/Unstage selected file/dir |
 
 ### Diff View (right pane)
 
-| Key       | Action                               |
-| --------- | ------------------------------------ |
-| `j` / `↓` | Scroll down one line                 |
-| `k` / `↑` | Scroll up one line                   |
-| `Ctrl+D`  | Scroll down half a page              |
-| `Ctrl+U`  | Scroll up half a page                |
-| `g`       | Jump to top                          |
-| `G`       | Jump to bottom                       |
-| `n`       | Jump to next hunk                    |
-| `p`       | Jump to previous hunk                |
-| `a`       | Stage current hunk (`git add`)       |
-| `r`       | Unstage current hunk (`git restore`) |
-| `A`       | Stage all changes in the file        |
-| `R`       | Revert all changes in the file       |
-| `v`       | Enter line-select mode               |
+| Key       | Action                  |
+| --------- | ----------------------- |
+| `j` / `↓` | Scroll down one line    |
+| `k` / `↑` | Scroll up one line      |
+| `Ctrl+D`  | Scroll down half a page |
+| `Ctrl+U`  | Scroll up half a page   |
+| `g`       | Jump to top             |
+| `G`       | Jump to bottom          |
+| `n`       | Jump to next hunk       |
+| `p`       | Jump to previous hunk   |
+| `v`       | Enter line-select mode  |
 
 ### Line-Select Mode (started with `v`)
 
-| Key       | Action                                       |
-| --------- | -------------------------------------------- |
-| `j` / `k` | Move cursor                                  |
-| `Space`   | Toggle line selection (`+` / `-` lines only) |
-| `a`       | Stage selected lines                         |
-| `r`       | Revert selected lines                        |
-| `Esc`     | Exit line-select mode                        |
+| Key       | Action                       |
+| --------- | ---------------------------- |
+| `j` / `k` | Move cursor                  |
+| `Enter`   | Stage/Unstage selected lines |
+| `v`       | Exit line-select mode        |
 
 ## File Status Indicators
 
@@ -145,16 +120,6 @@ Settings can be specified in `~/.config/diffview/config.toml`.
 [diff]
 # "raw" | "delta" | "difftastic"
 tool = "raw"
-
-[keybindings]
-add        = "a"
-revert     = "r"
-add_all    = "A"
-revert_all = "R"
-select_mode = "v"
-toggle_fold = " "
-next_hunk  = "n"
-prev_hunk  = "p"
 ```
 
 Command-line arguments take precedence over the configuration file.
