@@ -6,21 +6,45 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::git::diff::{parse_diff, FileDiff, Hunk};
-use crate::git::status::{get_status, GitFile};
+use crate::git::diff::{parse_diff, FileDiff};
+use crate::git::status::get_status;
 
-// ─── Focus / Mode ──────────────────────────────────────────────────────────
+// ─── Focus ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Focus {
-    Tree,
-    Diff,
+    Unstaged,
+    Staged,
+    DiffView,
+    InlineSelect,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum AppMode {
-    Normal,
-    SelectLines,
+// ─── TreePane ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TreePane {
+    Unstaged,
+    Staged,
+}
+
+impl TreePane {
+    pub fn label(self) -> &'static str {
+        match self {
+            TreePane::Unstaged => "Unstaged",
+            TreePane::Staged => "Staged",
+        }
+    }
+
+    pub fn to_focus(self) -> Focus {
+        match self {
+            TreePane::Unstaged => Focus::Unstaged,
+            TreePane::Staged => Focus::Staged,
+        }
+    }
+
+    pub fn is_staged(self) -> bool {
+        matches!(self, TreePane::Staged)
+    }
 }
 
 // ─── Diff tool ─────────────────────────────────────────────────────────────
@@ -73,215 +97,43 @@ impl TreeNode {
     }
 
     pub fn is_unmerged(&self) -> bool {
-        matches!(
-            (self.staged, self.unstaged),
-            ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')
-        )
+        self.staged == 'U' || self.unstaged == 'U'
     }
 
-    pub fn short_status(&self) -> char {
-        if self.staged != ' ' && self.staged != '?' {
-            self.staged
-        } else {
-            self.unstaged
+    pub fn status_for(&self, pane: TreePane) -> char {
+        match pane {
+            TreePane::Unstaged => self.unstaged,
+            TreePane::Staged => {
+                if self.staged == '?' { ' ' } else { self.staged }
+            }
         }
     }
 }
 
-// ─── Line mapping for select mode ──────────────────────────────────────────
+// ─── TreeSection ──────────────────────────────────────────────────────────
 
-/// Maps a display-line index in the raw diff to its hunk and line position.
-/// Only `+` and `-` lines are selectable; context/header lines have is_selectable=false.
-#[derive(Debug, Clone)]
-pub struct DisplayLineInfo {
-    pub hunk_idx: Option<usize>,
-    pub line_in_hunk: Option<usize>,
-    pub is_selectable: bool,
-}
-
-// ─── App ───────────────────────────────────────────────────────────────────
-
-pub struct App {
-    pub should_quit: bool,
-    pub focus: Focus,
-    pub mode: AppMode,
-    #[allow(dead_code)]
-    pub config: Config, // kept for future keybinding customization
-    pub tool: DiffTool,
-    pub staged_only: bool,
-    pub repo_root: PathBuf,
-
-    // Tree state
+pub struct TreeSection {
     pub all_nodes: Vec<TreeNode>,
     pub visible: Vec<usize>,
-    pub tree_cursor: usize,
-
-    // Diff state
-    pub display_diff: String,     // content shown in diff pane (may have ANSI codes)
-    pub raw_diff: String,         // always the plain git diff output
-    pub file_diff: FileDiff,
-    pub diff_scroll: usize,
-    pub diff_cursor: usize,       // current line in select mode
-    pub hunk_cursor: usize,
-    pub selected_lines: HashSet<usize>, // indices into file_diff.hunks[hunk_cursor].lines
-    pub current_file: Option<String>,
-    pub line_infos: Vec<DisplayLineInfo>,
-    pub diff_pane_height: usize,
-    pub diff_pane_width: u16,
-
-    // Status bar
-    pub status_message: Option<String>,
-    pub error_message: Option<String>,
+    pub cursor: usize,
 }
 
-impl App {
-    pub fn new(
-        tool_override: Option<String>,
-        staged_only: bool,
-        path_override: Option<String>,
-    ) -> Result<Self> {
-        let repo_root = if let Some(p) = path_override {
-            PathBuf::from(p)
-        } else {
-            crate::git::get_repo_root()?
-        };
-
-        let config = Config::load().unwrap_or_default();
-
-        let tool = if let Some(t) = tool_override {
-            DiffTool::from_str(&t)
-        } else {
-            DiffTool::from_str(&config.diff.tool)
-        };
-
-        let mut app = App {
-            should_quit: false,
-            focus: Focus::Tree,
-            mode: AppMode::Normal,
-            config,
-            tool,
-            staged_only,
-            repo_root,
+impl TreeSection {
+    pub fn new() -> Self {
+        Self {
             all_nodes: Vec::new(),
             visible: Vec::new(),
-            tree_cursor: 0,
-            display_diff: String::new(),
-            raw_diff: String::new(),
-            file_diff: FileDiff::default(),
-            diff_scroll: 0,
-            diff_cursor: 0,
-            hunk_cursor: 0,
-            selected_lines: HashSet::new(),
-            current_file: None,
-            line_infos: Vec::new(),
-            diff_pane_height: 20,
-            diff_pane_width: {
-                // Use actual terminal size for the initial diff load
-                let w = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(120);
-                ((w * 3) / 4).saturating_sub(2)
-            },
-            status_message: None,
-            error_message: None,
-        };
-
-        app.refresh_tree()?;
-
-        // Auto-select first file
-        if let Some(node) = app.first_file_node() {
-            if !node.is_dir && !node.is_untracked() {
-                let _ = app.load_diff_for_current();
-            }
+            cursor: 0,
         }
-
-        Ok(app)
     }
 
-    fn first_file_node(&self) -> Option<&TreeNode> {
-        self.visible.iter().find_map(|&idx| {
-            let n = &self.all_nodes[idx];
-            if !n.is_dir { Some(n) } else { None }
-        })
-    }
-
-    // ─── Tree building ───────────────────────────────────────────────────
-
-    pub fn refresh_tree(&mut self) -> Result<()> {
-        let files = get_status(&self.repo_root)?;
-        self.build_tree(files);
-        Ok(())
-    }
-
-    fn build_tree(&mut self, files: Vec<GitFile>) {
-        // Preserve existing expansion states
-        let prev_expanded: std::collections::HashMap<PathBuf, bool> = self
-            .all_nodes
-            .iter()
-            .filter(|n| n.is_dir)
-            .map(|n| (n.path.clone(), n.expanded))
-            .collect();
-
-        // Use BTreeMap so keys are sorted lexicographically.
-        // Dir keys get a trailing '/' so they sort before their children.
-        // Value: (is_dir, staged, unstaged)
-        let mut map: BTreeMap<String, (bool, char, char)> = BTreeMap::new();
-
-        for file in &files {
-            let fp = PathBuf::from(&file.path);
-
-            // Insert all ancestor directories
-            let mut ancestor = PathBuf::new();
-            let components: Vec<_> = fp.components().collect();
-            for (i, comp) in components.iter().enumerate() {
-                ancestor = ancestor.join(comp);
-                if i + 1 < components.len() {
-                    // It's a directory ancestor
-                    let key = format!("{}/", ancestor.to_string_lossy());
-                    map.entry(key).or_insert((true, ' ', ' '));
-                }
-            }
-
-            // Insert the file itself
-            map.insert(file.path.clone(), (false, file.staged, file.unstaged));
-        }
-
-        let mut nodes: Vec<TreeNode> = Vec::new();
-        for (key, (is_dir, staged, unstaged)) in &map {
-            let path = if *is_dir {
-                PathBuf::from(key.trim_end_matches('/'))
-            } else {
-                PathBuf::from(key)
-            };
-
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| key.clone());
-
-            let depth = path.components().count().saturating_sub(1);
-            let expanded = if *is_dir {
-                *prev_expanded.get(&path).unwrap_or(&true)
-            } else {
-                false
-            };
-
-            nodes.push(TreeNode {
-                path,
-                name,
-                depth,
-                is_dir: *is_dir,
-                expanded,
-                staged: *staged,
-                unstaged: *unstaged,
-            });
-        }
-
-        self.all_nodes = nodes;
-        self.rebuild_visible();
-        self.clamp_tree_cursor();
+    pub fn current_node(&self) -> Option<&TreeNode> {
+        self.visible
+            .get(self.cursor)
+            .and_then(|&idx| self.all_nodes.get(idx))
     }
 
     pub fn rebuild_visible(&mut self) {
-        // Build a quick lookup: dir path → expanded
         let expanded: std::collections::HashMap<PathBuf, bool> = self
             .all_nodes
             .iter()
@@ -309,61 +161,285 @@ impl App {
         }
     }
 
-    fn clamp_tree_cursor(&mut self) {
+    pub fn clamp_cursor(&mut self) {
         if self.visible.is_empty() {
-            self.tree_cursor = 0;
-        } else if self.tree_cursor >= self.visible.len() {
-            self.tree_cursor = self.visible.len() - 1;
+            self.cursor = 0;
+        } else if self.cursor >= self.visible.len() {
+            self.cursor = self.visible.len() - 1;
         }
     }
 
-    pub fn current_tree_node(&self) -> Option<&TreeNode> {
-        self.visible
-            .get(self.tree_cursor)
-            .and_then(|&idx| self.all_nodes.get(idx))
+    pub fn is_empty(&self) -> bool {
+        self.visible.is_empty()
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.all_nodes.iter().filter(|n| !n.is_dir).count()
+    }
+
+    /// Expand or collapse a directory node at cursor
+    fn set_expanded(&mut self, expanded: bool) {
+        if let Some(&idx) = self.visible.get(self.cursor) {
+            if self.all_nodes[idx].is_dir {
+                self.all_nodes[idx].expanded = expanded;
+                self.rebuild_visible();
+                self.clamp_cursor();
+            }
+        }
+    }
+
+    /// Expand a directory and move cursor to its first child
+    fn expand_and_enter(&mut self) {
+        let cursor_vis_idx = self.cursor;
+        let node_idx = match self.visible.get(cursor_vis_idx) {
+            Some(&idx) => idx,
+            None => return,
+        };
+        if !self.all_nodes[node_idx].is_dir {
+            return;
+        }
+
+        self.all_nodes[node_idx].expanded = true;
+        self.rebuild_visible();
+        self.clamp_cursor();
+
+        // Move cursor to the first child (the next visible item after the dir)
+        if cursor_vis_idx + 1 < self.visible.len() {
+            self.cursor = cursor_vis_idx + 1;
+        }
+    }
+
+    /// Fold the parent directory of the current node
+    fn fold_parent(&mut self) {
+        let current_path = match self.current_node() {
+            Some(n) => n.path.clone(),
+            None => return,
+        };
+        if let Some(parent) = current_path.parent() {
+            if parent == Path::new("") {
+                return;
+            }
+            for (i, node) in self.all_nodes.iter_mut().enumerate() {
+                if node.is_dir && node.path == parent {
+                    node.expanded = false;
+                    self.rebuild_visible();
+                    if let Some(pos) = self.visible.iter().position(|&idx| idx == i) {
+                        self.cursor = pos;
+                    }
+                    self.clamp_cursor();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Collect all file paths under a directory node (for batch stage/unstage)
+    fn files_under_dir(&self, dir_path: &Path) -> Vec<String> {
+        self.all_nodes
+            .iter()
+            .filter(|n| !n.is_dir && n.path.starts_with(dir_path))
+            .map(|n| n.path.to_string_lossy().to_string())
+            .collect()
+    }
+}
+
+// ─── Line mapping for inline-select ─────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct DisplayLineInfo {
+    pub hunk_idx: Option<usize>,
+    pub line_in_hunk: Option<usize>,
+    pub is_selectable: bool,
+}
+
+// ─── App ───────────────────────────────────────────────────────────────────
+
+pub struct App {
+    pub should_quit: bool,
+    pub focus: Focus,
+    #[allow(dead_code)]
+    pub config: Config,
+    pub tool: DiffTool,
+    pub repo_root: PathBuf,
+
+    // Tree sections
+    pub unstaged: TreeSection,
+    pub staged: TreeSection,
+
+    // Diff state
+    pub diff_origin: Option<TreePane>,
+    pub display_diff: String,
+    pub raw_diff: String,
+    pub file_diff: FileDiff,
+    pub diff_scroll: usize,
+    pub diff_cursor: usize,
+    pub hunk_cursor: usize,
+    pub current_file: Option<String>,
+    pub line_infos: Vec<DisplayLineInfo>,
+    pub diff_pane_height: usize,
+    pub diff_pane_width: u16,
+
+    // Status bar
+    pub status_message: Option<String>,
+    pub error_message: Option<String>,
+}
+
+impl App {
+    pub fn new(
+        tool_override: Option<String>,
+        path_override: Option<String>,
+    ) -> Result<Self> {
+        let repo_root = if let Some(p) = path_override {
+            PathBuf::from(p)
+        } else {
+            crate::git::get_repo_root()?
+        };
+
+        let config = Config::load().unwrap_or_default();
+
+        let tool = if let Some(t) = tool_override {
+            DiffTool::from_str(&t)
+        } else {
+            DiffTool::from_str(&config.diff.tool)
+        };
+
+        let mut app = App {
+            should_quit: false,
+            focus: Focus::Unstaged,
+            config,
+            tool,
+            repo_root,
+            unstaged: TreeSection::new(),
+            staged: TreeSection::new(),
+            diff_origin: None,
+            display_diff: String::new(),
+            raw_diff: String::new(),
+            file_diff: FileDiff::default(),
+            diff_scroll: 0,
+            diff_cursor: 0,
+            hunk_cursor: 0,
+            current_file: None,
+            line_infos: Vec::new(),
+            diff_pane_height: 20,
+            diff_pane_width: {
+                let w = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(120);
+                ((w * 3) / 4).saturating_sub(2)
+            },
+            status_message: None,
+            error_message: None,
+        };
+
+        app.refresh_trees()?;
+
+        // Auto-focus: if unstaged is empty but staged has items, start in staged
+        if app.unstaged.is_empty() && !app.staged.is_empty() {
+            app.focus = Focus::Staged;
+        }
+
+        // Auto-load diff for the first file in the focused section
+        app.auto_load_first_diff();
+
+        Ok(app)
+    }
+
+    fn auto_load_first_diff(&mut self) {
+        let pane = match self.focus {
+            Focus::Unstaged => TreePane::Unstaged,
+            Focus::Staged => TreePane::Staged,
+            _ => return,
+        };
+        let section = self.tree(pane);
+        if let Some(node) = section.current_node() {
+            if !node.is_dir && !node.is_untracked() {
+                let path = node.path.to_string_lossy().to_string();
+                let _ = self.load_diff(&path, pane);
+            }
+        }
+    }
+
+    // ─── Tree access ────────────────────────────────────────────────────
+
+    pub fn tree(&self, pane: TreePane) -> &TreeSection {
+        match pane {
+            TreePane::Unstaged => &self.unstaged,
+            TreePane::Staged => &self.staged,
+        }
+    }
+
+    pub fn is_tree_focused(&self, pane: TreePane) -> bool {
+        match pane {
+            TreePane::Unstaged => self.focus == Focus::Unstaged,
+            TreePane::Staged => self.focus == Focus::Staged,
+        }
+    }
+
+    fn tree_mut(&mut self, pane: TreePane) -> &mut TreeSection {
+        match pane {
+            TreePane::Unstaged => &mut self.unstaged,
+            TreePane::Staged => &mut self.staged,
+        }
+    }
+
+    fn focused_pane(&self) -> Option<TreePane> {
+        match self.focus {
+            Focus::Unstaged => Some(TreePane::Unstaged),
+            Focus::Staged => Some(TreePane::Staged),
+            _ => None,
+        }
+    }
+
+    // ─── Tree building ───────────────────────────────────────────────────
+
+    pub fn refresh_trees(&mut self) -> Result<()> {
+        let files = get_status(&self.repo_root)?;
+
+        // Split files into unstaged and staged
+        let mut unstaged_files: Vec<(String, char, char)> = Vec::new();
+        let mut staged_files: Vec<(String, char, char)> = Vec::new();
+
+        for file in &files {
+            // Unstaged: Y column ≠ ' ' (includes '?' for untracked)
+            if file.unstaged != ' ' {
+                unstaged_files.push((file.path.clone(), file.staged, file.unstaged));
+            }
+            // Staged: X column ≠ ' ' AND X column ≠ '?'
+            if file.staged != ' ' && file.staged != '?' {
+                staged_files.push((file.path.clone(), file.staged, file.unstaged));
+            }
+        }
+
+        build_section(&mut self.unstaged.all_nodes, &unstaged_files);
+        rebuild_section_visible(&mut self.unstaged);
+
+        build_section(&mut self.staged.all_nodes, &staged_files);
+        rebuild_section_visible(&mut self.staged);
+
+        Ok(())
     }
 
     // ─── Diff loading ────────────────────────────────────────────────────
 
-    pub fn load_diff_for_current(&mut self) -> Result<()> {
-        let (path, is_untracked, is_dir) = match self.current_tree_node() {
-            Some(n) => (
-                n.path.to_string_lossy().to_string(),
-                n.is_untracked(),
-                n.is_dir,
-            ),
-            None => return Ok(()),
-        };
-
-        if is_dir {
-            self.clear_diff();
-            return Ok(());
-        }
-
-        if is_untracked {
-            self.display_diff = "(untracked file – press 'a' to stage it)".to_string();
-            self.raw_diff = String::new();
-            self.file_diff = FileDiff::default();
-            self.current_file = Some(path);
-            self.diff_scroll = 0;
-            return Ok(());
-        }
-
-        let raw = crate::git::diff::get_raw_diff(&path, self.staged_only, &self.repo_root)
+    pub fn load_diff(&mut self, path: &str, pane: TreePane) -> Result<()> {
+        let raw = crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
             .unwrap_or_default();
 
-        let display =
-            crate::git::diff::get_display_diff(&path, self.staged_only, self.tool.name(), self.diff_pane_width, &self.repo_root)
-                .unwrap_or_else(|_| raw.clone());
+        let display = crate::git::diff::get_display_diff(
+            path,
+            pane.is_staged(),
+            self.tool.name(),
+            self.diff_pane_width,
+            &self.repo_root,
+        )
+        .unwrap_or_else(|_| raw.clone());
 
         self.raw_diff = raw.clone();
         self.display_diff = display;
         self.file_diff = parse_diff(&raw);
-        self.current_file = Some(path);
+        self.current_file = Some(path.to_string());
+        self.diff_origin = Some(pane);
         self.diff_scroll = 0;
         self.diff_cursor = 0;
         self.hunk_cursor = 0;
-        self.selected_lines.clear();
         self.build_line_infos();
 
         Ok(())
@@ -374,11 +450,11 @@ impl App {
         self.raw_diff.clear();
         self.file_diff = FileDiff::default();
         self.current_file = None;
+        self.diff_origin = None;
         self.diff_scroll = 0;
         self.line_infos.clear();
     }
 
-    /// Build a per-display-line mapping for the raw diff (used in select mode).
     fn build_line_infos(&mut self) {
         let mut infos: Vec<DisplayLineInfo> = Vec::new();
         let mut hunk_idx: Option<usize> = None;
@@ -415,15 +491,25 @@ impl App {
         self.line_infos = infos;
     }
 
+    /// Reload diff for the current file with the current origin
+    fn reload_current_diff(&mut self) -> Result<()> {
+        if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
+            let prev_scroll = self.diff_scroll;
+            let prev_cursor = self.diff_cursor;
+            self.load_diff(&path, pane)?;
+            let line_count = self.raw_diff.lines().count();
+            self.diff_scroll = prev_scroll.min(line_count.saturating_sub(1));
+            self.diff_cursor = prev_cursor.min(line_count.saturating_sub(1));
+        }
+        Ok(())
+    }
+
     // ─── Main event loop ─────────────────────────────────────────────────
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         loop {
             let size = terminal.size()?;
-            // Subtract 2 for the left/right borders of the diff pane Block,
-            // so delta renders content that fits exactly in the inner area.
             self.diff_pane_width = ((size.width * 3) / 4).saturating_sub(2);
-            // statusbar = 1, borders = 2 → inner diff height ≈ size.height - 3
             self.diff_pane_height = size.height.saturating_sub(3) as usize;
 
             terminal.draw(|f| crate::ui::render(f, self))?;
@@ -433,7 +519,7 @@ impl App {
                     crossterm::event::Event::Key(key) => self.handle_key(key)?,
                     crossterm::event::Event::Resize(_, _) => {
                         if self.tool == DiffTool::Delta && self.current_file.is_some() {
-                            let _ = self.load_diff_for_current();
+                            let _ = self.reload_current_diff();
                         }
                     }
                     _ => {}
@@ -453,120 +539,261 @@ impl App {
         self.error_message = None;
         self.status_message = None;
 
-        match self.mode {
-            AppMode::Normal => self.handle_key_normal(key)?,
-            AppMode::SelectLines => self.handle_key_select(key)?,
+        match self.focus {
+            Focus::Unstaged | Focus::Staged => self.handle_tree_key(key)?,
+            Focus::DiffView => self.handle_diff_key(key)?,
+            Focus::InlineSelect => self.handle_inline_select_key(key)?,
         }
         Ok(())
     }
 
-    fn handle_key_normal(&mut self, key: KeyEvent) -> Result<()> {
+    // ─── Tree key handling ──────────────────────────────────────────────
+
+    fn handle_tree_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Char('q') => {
                 self.should_quit = true;
             }
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Tree => Focus::Diff,
-                    Focus::Diff => Focus::Tree,
-                };
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.tree_move_down();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.tree_move_up();
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.tree_action_right()?;
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.tree_action_left();
+            }
+            KeyCode::Enter => {
+                self.tree_enter()?;
             }
             KeyCode::Char('?') => {
                 self.status_message = Some(
-                    "Tab:focus  j/k:move  Enter:open  Space:fold  a:add  r:revert  A:add-all  R:revert-all  v:line-select  n/p:hunk  q:quit"
+                    "j/k:move  l:open  h:back  Enter:stage/unstage  v:line-select  n/p:hunk  q:quit"
                         .to_string(),
                 );
             }
-            _ => match self.focus {
-                Focus::Tree => self.handle_tree_key(key)?,
-                Focus::Diff => self.handle_diff_key(key)?,
-            },
-        }
-        Ok(())
-    }
-
-    fn handle_tree_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.visible.is_empty() && self.tree_cursor + 1 < self.visible.len() {
-                    self.tree_cursor += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.tree_cursor > 0 {
-                    self.tree_cursor -= 1;
-                }
-            }
-            KeyCode::Enter => {
-                let is_dir = self
-                    .current_tree_node()
-                    .map(|n| n.is_dir)
-                    .unwrap_or(false);
-                if is_dir {
-                    self.toggle_fold();
-                } else {
-                    self.load_diff_for_current()?;
-                    self.focus = Focus::Diff;
-                }
-            }
-            KeyCode::Char(' ') => {
-                self.toggle_fold();
-            }
-            KeyCode::Char('a') => self.tree_stage()?,
-            KeyCode::Char('r') => self.tree_revert()?,
             _ => {}
         }
         Ok(())
     }
 
-    fn toggle_fold(&mut self) {
-        if let Some(&idx) = self.visible.get(self.tree_cursor) {
-            if self.all_nodes[idx].is_dir {
-                self.all_nodes[idx].expanded = !self.all_nodes[idx].expanded;
-                self.rebuild_visible();
-                self.clamp_tree_cursor();
-            }
+    fn tree_move_down(&mut self) {
+        let pane = match self.focused_pane() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let can_move = {
+            let tree = self.tree(pane);
+            !tree.is_empty() && tree.cursor + 1 < tree.visible.len()
+        };
+
+        if can_move {
+            self.tree_mut(pane).cursor += 1;
+        } else if pane == TreePane::Unstaged && !self.staged.is_empty() {
+            self.focus = Focus::Staged;
+            self.staged.cursor = 0;
         }
+
+        self.tree_load_preview();
     }
 
-    fn tree_stage(&mut self) -> Result<()> {
-        let (path, _is_dir) = match self.current_tree_node() {
-            Some(n) => (n.path.to_string_lossy().to_string(), n.is_dir),
+    fn tree_move_up(&mut self) {
+        let pane = match self.focused_pane() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let can_move = {
+            let tree = self.tree(pane);
+            tree.cursor > 0
+        };
+
+        if can_move {
+            self.tree_mut(pane).cursor -= 1;
+        } else if pane == TreePane::Staged && !self.unstaged.is_empty() {
+            self.focus = Focus::Unstaged;
+            self.unstaged.cursor = self.unstaged.visible.len().saturating_sub(1);
+        }
+
+        self.tree_load_preview();
+    }
+
+    /// l key: expand dir (and move cursor to first child) or open file diff
+    fn tree_action_right(&mut self) -> Result<()> {
+        let pane = match self.focused_pane() {
+            Some(p) => p,
             None => return Ok(()),
         };
-        match crate::git::apply::stage_file(&path, &self.repo_root) {
-            Ok(_) => {
-                self.status_message = Some(format!("Staged: {}", path));
-                self.refresh_after_op()?;
+
+        let (is_dir, is_untracked, path) = {
+            let section = self.tree(pane);
+            match section.current_node() {
+                Some(n) => (n.is_dir, n.is_untracked(), n.path.to_string_lossy().to_string()),
+                None => return Ok(()),
             }
-            Err(e) => self.error_message = Some(format!("Error: {}", e)),
+        };
+
+        if is_dir {
+            self.tree_mut(pane).expand_and_enter();
+            self.tree_load_preview();
+        } else {
+            if is_untracked {
+                self.display_diff = "(untracked file – press Enter to stage it)".to_string();
+                self.raw_diff = String::new();
+                self.file_diff = FileDiff::default();
+                self.current_file = Some(path);
+                self.diff_origin = Some(pane);
+                self.diff_scroll = 0;
+            } else {
+                self.load_diff(&path, pane)?;
+            }
+            self.focus = Focus::DiffView;
         }
         Ok(())
     }
 
-    fn tree_revert(&mut self) -> Result<()> {
-        let (path, staged) = match self.current_tree_node() {
-            Some(n) => (
-                n.path.to_string_lossy().to_string(),
-                n.staged != ' ' && n.staged != '?',
-            ),
+    /// h key: on dir always close, on file fold parent
+    fn tree_action_left(&mut self) {
+        let pane = match self.focused_pane() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let is_dir = self
+            .tree(pane)
+            .current_node()
+            .map(|n| n.is_dir)
+            .unwrap_or(false);
+
+        if is_dir {
+            self.tree_mut(pane).set_expanded(false);
+        } else {
+            self.tree_mut(pane).fold_parent();
+        }
+    }
+
+    /// Enter key: stage/unstage file or dir
+    fn tree_enter(&mut self) -> Result<()> {
+        let pane = match self.focused_pane() {
+            Some(p) => p,
             None => return Ok(()),
         };
-        match crate::git::apply::unstage_file(&path, staged, &self.repo_root) {
-            Ok(_) => {
-                self.status_message = Some(format!("Reverted: {}", path));
-                self.refresh_after_op()?;
+
+        let (is_dir, path) = {
+            let section = self.tree(pane);
+            match section.current_node() {
+                Some(n) => (n.is_dir, n.path.to_string_lossy().to_string()),
+                None => return Ok(()),
             }
-            Err(e) => self.error_message = Some(format!("Error: {}", e)),
+        };
+
+        match pane {
+            TreePane::Unstaged => {
+                if is_dir {
+                    let files = self.unstaged.files_under_dir(Path::new(&path));
+                    for file in &files {
+                        let _ = crate::git::apply::stage_file(file, &self.repo_root);
+                    }
+                    self.status_message = Some(format!("Staged directory: {}", path));
+                } else {
+                    match crate::git::apply::stage_file(&path, &self.repo_root) {
+                        Ok(_) => self.status_message = Some(format!("Staged: {}", path)),
+                        Err(e) => {
+                            self.error_message = Some(format!("Error: {}", e));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            TreePane::Staged => {
+                if is_dir {
+                    let files = self.staged.files_under_dir(Path::new(&path));
+                    for file in &files {
+                        let _ = crate::git::apply::unstage_file(file, &self.repo_root);
+                    }
+                    self.status_message = Some(format!("Unstaged directory: {}", path));
+                } else {
+                    match crate::git::apply::unstage_file(&path, &self.repo_root) {
+                        Ok(_) => self.status_message = Some(format!("Unstaged: {}", path)),
+                        Err(e) => {
+                            self.error_message = Some(format!("Error: {}", e));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
+
+        self.refresh_after_tree_op()?;
         Ok(())
     }
+
+    /// Load diff preview when cursor moves in tree
+    fn tree_load_preview(&mut self) {
+        let pane = match self.focused_pane() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let (is_dir, is_untracked, path) = {
+            let section = self.tree(pane);
+            match section.current_node() {
+                Some(n) => (n.is_dir, n.is_untracked(), n.path.to_string_lossy().to_string()),
+                None => {
+                    self.clear_diff();
+                    return;
+                }
+            }
+        };
+
+        if is_dir {
+            return;
+        }
+
+        if is_untracked {
+            self.display_diff = "(untracked file – press Enter to stage it)".to_string();
+            self.raw_diff = String::new();
+            self.file_diff = FileDiff::default();
+            self.current_file = Some(path);
+            self.diff_origin = Some(pane);
+            self.diff_scroll = 0;
+        } else {
+            let _ = self.load_diff(&path, pane);
+        }
+    }
+
+    fn refresh_after_tree_op(&mut self) -> Result<()> {
+        let prev_focus = self.focus.clone();
+        self.refresh_trees()?;
+
+        match prev_focus {
+            Focus::Unstaged if self.unstaged.is_empty() && !self.staged.is_empty() => {
+                self.focus = Focus::Staged;
+            }
+            Focus::Staged if self.staged.is_empty() && !self.unstaged.is_empty() => {
+                self.focus = Focus::Unstaged;
+            }
+            _ => {}
+        }
+
+        self.tree_load_preview();
+        Ok(())
+    }
+
+    // ─── Diff view key handling ─────────────────────────────────────────
 
     fn handle_diff_key(&mut self, key: KeyEvent) -> Result<()> {
-        let line_count = self.diff_line_count();
+        let line_count = self.display_diff.lines().count();
         let half_page = (self.diff_pane_height / 2).max(1);
 
         match key.code {
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.diff_scroll + 1 < line_count {
                     self.diff_scroll += 1;
@@ -578,7 +805,8 @@ impl App {
                 }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.diff_scroll = (self.diff_scroll + half_page).min(line_count.saturating_sub(1));
+                self.diff_scroll =
+                    (self.diff_scroll + half_page).min(line_count.saturating_sub(1));
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.diff_scroll = self.diff_scroll.saturating_sub(half_page);
@@ -591,22 +819,21 @@ impl App {
             }
             KeyCode::Char('n') => self.jump_next_hunk(),
             KeyCode::Char('p') => self.jump_prev_hunk(),
-            KeyCode::Char('a') => self.hunk_stage()?,
-            KeyCode::Char('r') => self.hunk_unstage()?,
-            KeyCode::Char('A') => self.file_stage_all()?,
-            KeyCode::Char('R') => self.file_revert_all()?,
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.focus = self
+                    .diff_origin
+                    .map(|p| p.to_focus())
+                    .unwrap_or(Focus::Unstaged);
+            }
             KeyCode::Char('v') => {
                 if self.tool.supports_line_ops() {
                     if self.file_diff.hunks.is_empty() {
                         self.error_message = Some("No hunks to select lines from".to_string());
                     } else {
-                        self.mode = AppMode::SelectLines;
+                        self.focus = Focus::InlineSelect;
                         self.diff_cursor = self.diff_scroll;
-                        self.selected_lines.clear();
-                        self.status_message = Some(
-                            "Line select: j/k move  Space toggle  a stage  r revert  Esc exit"
-                                .to_string(),
-                        );
+                        self.status_message =
+                            Some("Inline select: j/k move  Enter apply  v/h exit".to_string());
                     }
                 } else {
                     self.error_message =
@@ -616,14 +843,6 @@ impl App {
             _ => {}
         }
         Ok(())
-    }
-
-    fn diff_line_count(&self) -> usize {
-        if self.mode == AppMode::SelectLines {
-            self.raw_diff.lines().count()
-        } else {
-            self.display_diff.lines().count()
-        }
     }
 
     fn jump_next_hunk(&mut self) {
@@ -649,10 +868,20 @@ impl App {
 
     fn scroll_to_hunk(&mut self, hunk_idx: usize) {
         let mut hunk_count = 0usize;
-        for (line_no, line) in self.display_diff.lines().enumerate() {
+        let content = if self.focus == Focus::InlineSelect {
+            &self.raw_diff
+        } else {
+            &self.display_diff
+        };
+        for (line_no, line) in content.lines().enumerate() {
             if line.starts_with("@@") {
                 if hunk_count == hunk_idx {
-                    self.diff_scroll = line_no;
+                    if self.focus == Focus::InlineSelect {
+                        self.diff_cursor = line_no;
+                        self.diff_scroll = line_no;
+                    } else {
+                        self.diff_scroll = line_no;
+                    }
                     return;
                 }
                 hunk_count += 1;
@@ -660,112 +889,20 @@ impl App {
         }
     }
 
-    fn current_hunk(&self) -> Option<&Hunk> {
-        self.file_diff.hunks.get(self.hunk_cursor)
-    }
+    // ─── Inline select key handling ─────────────────────────────────────
 
-    fn hunk_stage(&mut self) -> Result<()> {
-        if !self.tool.supports_line_ops() {
-            self.error_message = Some("Hunk staging unavailable with difftastic".to_string());
-            return Ok(());
-        }
-        let file = match &self.current_file {
-            Some(f) => f.clone(),
-            None => return Ok(()),
-        };
-        let hunk = match self.current_hunk().cloned() {
-            Some(h) => h,
-            None => return Ok(()),
-        };
-        match crate::git::apply::stage_hunk(&file, &hunk, &self.repo_root) {
-            Ok(_) => {
-                self.status_message = Some("Hunk staged".to_string());
-                self.refresh_after_op()?;
-            }
-            Err(e) => self.error_message = Some(format!("Error: {}", e)),
-        }
-        Ok(())
-    }
-
-    fn hunk_unstage(&mut self) -> Result<()> {
-        if !self.tool.supports_line_ops() {
-            self.error_message = Some("Hunk revert unavailable with difftastic".to_string());
-            return Ok(());
-        }
-        let file = match &self.current_file {
-            Some(f) => f.clone(),
-            None => return Ok(()),
-        };
-        let hunk = match self.current_hunk().cloned() {
-            Some(h) => h,
-            None => return Ok(()),
-        };
-        match crate::git::apply::unstage_hunk(&file, &hunk, &self.repo_root) {
-            Ok(_) => {
-                self.status_message = Some("Hunk unstaged".to_string());
-                self.refresh_after_op()?;
-            }
-            Err(e) => self.error_message = Some(format!("Error: {}", e)),
-        }
-        Ok(())
-    }
-
-    fn file_stage_all(&mut self) -> Result<()> {
-        let file = match &self.current_file {
-            Some(f) => f.clone(),
-            None => return Ok(()),
-        };
-        match crate::git::apply::stage_file(&file, &self.repo_root) {
-            Ok(_) => {
-                self.status_message = Some(format!("Staged all changes in {}", file));
-                self.refresh_after_op()?;
-            }
-            Err(e) => self.error_message = Some(format!("Error: {}", e)),
-        }
-        Ok(())
-    }
-
-    fn file_revert_all(&mut self) -> Result<()> {
-        let file = match &self.current_file {
-            Some(f) => f.clone(),
-            None => return Ok(()),
-        };
-        let staged = self
-            .current_tree_node()
-            .map(|n| n.staged != ' ' && n.staged != '?')
-            .unwrap_or(false);
-        match crate::git::apply::unstage_file(&file, staged, &self.repo_root) {
-            Ok(_) => {
-                self.status_message = Some(format!("Reverted all changes in {}", file));
-                self.refresh_after_op()?;
-            }
-            Err(e) => self.error_message = Some(format!("Error: {}", e)),
-        }
-        Ok(())
-    }
-
-    fn refresh_after_op(&mut self) -> Result<()> {
-        self.refresh_tree()?;
-        if self.current_file.is_some() {
-            self.load_diff_for_current()?;
-        }
-        Ok(())
-    }
-
-    // ─── Select-lines mode ───────────────────────────────────────────────
-
-    fn handle_key_select(&mut self, key: KeyEvent) -> Result<()> {
+    fn handle_inline_select_key(&mut self, key: KeyEvent) -> Result<()> {
         let line_count = self.raw_diff.lines().count();
+        let half_page = (self.diff_pane_height / 2).max(1);
+
         match key.code {
-            KeyCode::Esc => {
-                self.mode = AppMode::Normal;
-                self.selected_lines.clear();
-                self.status_message = None;
+            KeyCode::Char('q') => {
+                self.should_quit = true;
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.diff_cursor + 1 < line_count {
                     self.diff_cursor += 1;
-                    self.sync_hunk_cursor_to_diff_cursor();
+                    self.sync_hunk_cursor();
                     if self.diff_cursor >= self.diff_scroll + self.diff_pane_height {
                         self.diff_scroll = self.diff_cursor + 1 - self.diff_pane_height;
                     }
@@ -774,80 +911,215 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.diff_cursor > 0 {
                     self.diff_cursor -= 1;
-                    self.sync_hunk_cursor_to_diff_cursor();
+                    self.sync_hunk_cursor();
                     if self.diff_cursor < self.diff_scroll {
                         self.diff_scroll = self.diff_cursor;
                     }
                 }
             }
-            KeyCode::Char(' ') => {
-                // Toggle selection if this display line corresponds to a selectable diff line
-                if let Some(info) = self.line_infos.get(self.diff_cursor) {
-                    if info.is_selectable {
-                        if let Some(li) = info.line_in_hunk {
-                            if self.selected_lines.contains(&li) {
-                                self.selected_lines.remove(&li);
-                            } else {
-                                self.selected_lines.insert(li);
-                            }
-                        }
-                    } else {
-                        self.status_message =
-                            Some("Only +/- lines are selectable".to_string());
-                    }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.diff_cursor =
+                    (self.diff_cursor + half_page).min(line_count.saturating_sub(1));
+                self.sync_hunk_cursor();
+                if self.diff_cursor >= self.diff_scroll + self.diff_pane_height {
+                    self.diff_scroll = self.diff_cursor + 1 - self.diff_pane_height;
                 }
             }
-            KeyCode::Char('a') => self.apply_selected_lines(false)?,
-            KeyCode::Char('r') => self.apply_selected_lines(true)?,
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.diff_cursor = self.diff_cursor.saturating_sub(half_page);
+                self.sync_hunk_cursor();
+                if self.diff_cursor < self.diff_scroll {
+                    self.diff_scroll = self.diff_cursor;
+                }
+            }
+            KeyCode::Char('n') => self.jump_next_hunk(),
+            KeyCode::Char('p') => self.jump_prev_hunk(),
+            KeyCode::Enter => {
+                self.apply_current_line()?;
+            }
+            KeyCode::Char('v') => {
+                self.focus = Focus::DiffView;
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.focus = self
+                    .diff_origin
+                    .map(|p| p.to_focus())
+                    .unwrap_or(Focus::Unstaged);
+            }
             _ => {}
         }
         Ok(())
     }
 
-    /// When cursor moves in select mode, keep hunk_cursor in sync.
-    /// If the cursor crosses into a different hunk, clear the selection.
-    fn sync_hunk_cursor_to_diff_cursor(&mut self) {
+    fn sync_hunk_cursor(&mut self) {
         if let Some(info) = self.line_infos.get(self.diff_cursor) {
             if let Some(new_hunk) = info.hunk_idx {
-                if new_hunk != self.hunk_cursor {
-                    self.hunk_cursor = new_hunk;
-                    self.selected_lines.clear();
-                }
+                self.hunk_cursor = new_hunk;
             }
         }
     }
 
-    fn apply_selected_lines(&mut self, reverse: bool) -> Result<()> {
-        if self.selected_lines.is_empty() {
-            self.error_message = Some("No lines selected (press Space to select)".to_string());
+    fn apply_current_line(&mut self) -> Result<()> {
+        let info = match self.line_infos.get(self.diff_cursor) {
+            Some(i) => i.clone(),
+            None => return Ok(()),
+        };
+
+        if !info.is_selectable {
+            self.error_message = Some("Only +/- lines can be applied".to_string());
             return Ok(());
         }
+
+        let hunk_idx = match info.hunk_idx {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+        let line_in_hunk = match info.line_in_hunk {
+            Some(l) => l,
+            None => return Ok(()),
+        };
 
         let file = match &self.current_file {
             Some(f) => f.clone(),
             None => return Ok(()),
         };
-        let hunk = match self.current_hunk().cloned() {
+        let hunk = match self.file_diff.hunks.get(hunk_idx).cloned() {
             Some(h) => h,
             None => return Ok(()),
         };
-        let selected = self.selected_lines.clone();
+        let pane = match self.diff_origin {
+            Some(p) => p,
+            None => return Ok(()),
+        };
 
-        let result = if reverse {
-            crate::git::apply::unstage_lines(&file, &hunk, &selected, &self.repo_root)
-        } else {
-            crate::git::apply::stage_lines(&file, &hunk, &selected, &self.repo_root)
+        let selected: HashSet<usize> = [line_in_hunk].into_iter().collect();
+
+        let result = match pane {
+            TreePane::Unstaged => {
+                crate::git::apply::stage_lines(&file, &hunk, &selected, &self.repo_root)
+            }
+            TreePane::Staged => {
+                crate::git::apply::unstage_lines(&file, &hunk, &selected, &self.repo_root)
+            }
         };
 
         match result {
             Ok(_) => {
-                self.status_message = Some("Selected lines applied".to_string());
-                self.mode = AppMode::Normal;
-                self.selected_lines.clear();
-                self.refresh_after_op()?;
+                let action = if pane.is_staged() { "Unstaged" } else { "Staged" };
+                self.status_message = Some(format!("{} 1 line", action));
+                self.refresh_trees()?;
+
+                let prev_cursor = self.diff_cursor;
+                self.reload_current_diff()?;
+
+                if self.file_diff.hunks.is_empty() && self.raw_diff.trim().is_empty() {
+                    self.clear_diff();
+                    self.focus = pane.to_focus();
+                } else {
+                    self.move_to_next_selectable(prev_cursor);
+                }
             }
             Err(e) => self.error_message = Some(format!("Error: {}", e)),
         }
         Ok(())
     }
+
+    fn move_to_next_selectable(&mut self, from: usize) {
+        let line_count = self.line_infos.len();
+        for i in from..line_count {
+            if let Some(info) = self.line_infos.get(i) {
+                if info.is_selectable {
+                    self.diff_cursor = i;
+                    self.ensure_cursor_visible();
+                    return;
+                }
+            }
+        }
+        for i in (0..from).rev() {
+            if let Some(info) = self.line_infos.get(i) {
+                if info.is_selectable {
+                    self.diff_cursor = i;
+                    self.ensure_cursor_visible();
+                    return;
+                }
+            }
+        }
+        self.diff_cursor = from.min(line_count.saturating_sub(1));
+    }
+
+    fn ensure_cursor_visible(&mut self) {
+        if self.diff_cursor < self.diff_scroll {
+            self.diff_scroll = self.diff_cursor;
+        } else if self.diff_cursor >= self.diff_scroll + self.diff_pane_height {
+            self.diff_scroll = self.diff_cursor + 1 - self.diff_pane_height;
+        }
+    }
+}
+
+// Helper to rebuild visible + clamp (avoids borrow issues)
+fn rebuild_section_visible(section: &mut TreeSection) {
+    section.rebuild_visible();
+    section.clamp_cursor();
+}
+
+/// Build tree nodes from a list of (path, staged, unstaged) tuples.
+/// Preserves existing expansion states from `target_nodes`.
+fn build_section(target_nodes: &mut Vec<TreeNode>, files: &[(String, char, char)]) {
+    let prev_expanded: std::collections::HashMap<PathBuf, bool> = target_nodes
+        .iter()
+        .filter(|n| n.is_dir)
+        .map(|n| (n.path.clone(), n.expanded))
+        .collect();
+
+    let mut map: BTreeMap<String, (bool, char, char)> = BTreeMap::new();
+
+    for (path, staged, unstaged) in files {
+        let fp = PathBuf::from(path);
+
+        // Insert ancestor directories
+        let mut ancestor = PathBuf::new();
+        let components: Vec<_> = fp.components().collect();
+        for (i, comp) in components.iter().enumerate() {
+            ancestor = ancestor.join(comp);
+            if i + 1 < components.len() {
+                let key = format!("{}/", ancestor.to_string_lossy());
+                map.entry(key).or_insert((true, ' ', ' '));
+            }
+        }
+
+        map.insert(path.clone(), (false, *staged, *unstaged));
+    }
+
+    let mut nodes: Vec<TreeNode> = Vec::new();
+    for (key, (is_dir, staged, unstaged)) in &map {
+        let path = if *is_dir {
+            PathBuf::from(key.trim_end_matches('/'))
+        } else {
+            PathBuf::from(key)
+        };
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| key.clone());
+
+        let depth = path.components().count().saturating_sub(1);
+        let expanded = if *is_dir {
+            *prev_expanded.get(&path).unwrap_or(&true)
+        } else {
+            false
+        };
+
+        nodes.push(TreeNode {
+            path,
+            name,
+            depth,
+            is_dir: *is_dir,
+            expanded,
+            staged: *staged,
+            unstaged: *unstaged,
+        });
+    }
+
+    *target_nodes = nodes;
 }

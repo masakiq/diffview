@@ -24,10 +24,6 @@ struct Args {
     #[arg(long, value_name = "TOOL")]
     tool: Option<String>,
 
-    /// Show only staged changes
-    #[arg(long)]
-    staged: bool,
-
     /// Repository path (default: current directory)
     path: Option<String>,
 }
@@ -45,7 +41,7 @@ async fn main() -> Result<()> {
 
     // ── Create app ──────────────────────────────────────────────────────
     let result = (|| -> Result<()> {
-        let mut app = app::App::new(args.tool, args.staged, args.path)?;
+        let mut app = app::App::new(args.tool, args.path)?;
         app.run(&mut terminal)
     })();
 

@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, DiffTool};
+use crate::app::{App, DiffTool, Focus};
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let spans = if let Some(ref err) = app.error_message {
@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             format!(" {}", msg),
             Style::default().fg(Color::Yellow),
         )]
-    } else if app.mode == AppMode::SelectLines {
+    } else if app.focus == Focus::InlineSelect {
         vec![
             Span::styled(
                 " [SELECT] ",
@@ -28,7 +28,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     .bg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" j/k:move  Space:toggle  a:stage  r:revert  Esc:exit"),
+            Span::raw(" j/k:move  Enter:apply  n/p:hunk  v:back  h:tree"),
         ]
     } else {
         build_normal_statusbar(app)
@@ -47,12 +47,20 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
         DiffTool::Difftastic => " tool:difftastic ",
     };
 
-    let staged_hint = if app.staged_only { " [staged] " } else { "" };
-
-    let ops = if app.tool.supports_line_ops() {
-        " [a]add [r]revert [A]add-all [R]revert-all [v]line-select [n/p]hunk [?]help [q]quit"
-    } else {
-        " [a]add [r]revert [A]add-all [R]revert-all (no line-ops) [?]help [q]quit"
+    let ops = match app.focus {
+        Focus::Unstaged | Focus::Staged => {
+            " [l]open [h]back [Enter]stage/unstage [j/k]move [?]help [q]quit"
+        }
+        Focus::DiffView => {
+            if app.tool.supports_line_ops() {
+                " [j/k]scroll [h]back [v]select [n/p]hunk [q]quit"
+            } else {
+                " [j/k]scroll [h]back [n/p]hunk [q]quit"
+            }
+        }
+        Focus::InlineSelect => {
+            " [j/k]move [Enter]apply [n/p]hunk [v]back [h]tree"
+        }
     };
 
     vec![
@@ -63,13 +71,9 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            staged_hint.to_string(),
-            Style::default().fg(Color::Green),
-        ),
         Span::raw(ops.to_string()),
         Span::styled(
-            "  M=modified A=added D=deleted ?=untracked U=unmerged",
+            "  M=modified A=added D=deleted ?=untracked",
             Style::default().fg(Color::DarkGray),
         ),
     ]

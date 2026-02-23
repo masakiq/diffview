@@ -7,10 +7,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, DiffTool, Focus};
+use crate::app::{App, DiffTool, Focus};
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == Focus::Diff;
+    let focused = matches!(app.focus, Focus::DiffView | Focus::InlineSelect);
 
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -18,19 +18,25 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let origin_label = match app.diff_origin {
+        Some(pane) => pane.label().to_lowercase(),
+        None => String::new(),
+    };
+
     let title = match &app.current_file {
         Some(path) => {
             if app.file_diff.is_binary {
-                format!(" {} [binary] ", path)
+                format!(" {} [{}][binary] ", path, origin_label)
             } else if !app.file_diff.hunks.is_empty() {
                 format!(
-                    " {} (hunk {}/{}) ",
+                    " {} [{}] (hunk {}/{}) ",
                     path,
+                    origin_label,
                     app.hunk_cursor + 1,
                     app.file_diff.hunks.len()
                 )
             } else {
-                format!(" {} ", path)
+                format!(" {} [{}] ", path, origin_label)
             }
         }
         None => " Diff ".to_string(),
@@ -46,16 +52,14 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     if app.current_file.is_none() {
         let hint = Paragraph::new(
-            "Select a file in the tree (← panel) and press Enter to view its diff.",
+            "Select a file and press 'l' to view its diff.",
         )
         .style(Style::default().fg(Color::DarkGray));
         f.render_widget(hint, inner_area);
         return;
     }
 
-    // In select mode show the raw diff with cursor + selection highlights;
-    // otherwise show the display diff (may be ANSI-colored).
-    let (content, use_raw_renderer) = if app.mode == AppMode::SelectLines {
+    let (content, use_raw_renderer) = if app.focus == Focus::InlineSelect {
         (&app.raw_diff, true)
     } else {
         match app.tool {
@@ -71,7 +75,6 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         let para = Paragraph::new(text).scroll((scroll, 0));
         f.render_widget(para, inner_area);
     } else {
-        // ANSI-colored output from delta / difftastic
         let text = content
             .as_bytes()
             .into_text()
@@ -81,10 +84,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Build ratatui Text for raw unified diff with syntax highlighting.
-/// In SelectLines mode also renders cursor and selection highlights.
 fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
-    let select_mode = app.mode == AppMode::SelectLines;
+    let inline_select = app.focus == Focus::InlineSelect;
 
     let lines: Vec<Line<'a>> = content
         .lines()
@@ -92,27 +93,20 @@ fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
         .map(|(display_idx, line)| {
             let base_style = diff_line_style(line);
 
-            if select_mode {
+            if inline_select {
                 let is_cursor = display_idx == app.diff_cursor;
-                let is_selected = app
+                let is_selectable = app
                     .line_infos
                     .get(display_idx)
-                    .and_then(|info| info.line_in_hunk)
-                    .map(|li| app.selected_lines.contains(&li))
+                    .map(|info| info.is_selectable)
                     .unwrap_or(false);
 
-                let bg = if is_cursor {
-                    Color::DarkGray
-                } else if is_selected {
-                    Color::Blue
-                } else {
-                    Color::Reset
-                };
-
                 let style = if is_cursor {
-                    base_style.bg(bg).add_modifier(Modifier::BOLD)
-                } else if is_selected {
-                    base_style.bg(bg)
+                    base_style
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_selectable {
+                    base_style
                 } else {
                     base_style
                 };

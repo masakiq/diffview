@@ -6,10 +6,11 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus};
+use crate::app::{App, TreePane};
 
-pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == Focus::Tree;
+pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
+    let focused = app.is_tree_focused(pane);
+    let tree = app.tree(pane);
 
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -17,13 +18,32 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let items: Vec<ListItem> = app
+    let title = if tree.visible.is_empty() {
+        format!(" {} (0) ", pane.label())
+    } else {
+        format!(
+            " {} ({}) ",
+            pane.label(),
+            tree.file_count()
+        )
+    };
+
+    if tree.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title);
+        f.render_widget(block, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = tree
         .visible
         .iter()
         .enumerate()
         .map(|(display_idx, &node_idx)| {
-            let node = &app.all_nodes[node_idx];
-            let is_selected = display_idx == app.tree_cursor;
+            let node = &tree.all_nodes[node_idx];
+            let is_selected = display_idx == tree.cursor;
 
             let indent = "  ".repeat(node.depth);
 
@@ -36,7 +56,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             let status_char = if node.is_dir {
                 ' '
             } else {
-                node.short_status()
+                node.status_for(pane)
             };
 
             let status_str = if status_char == ' ' || node.is_dir {
@@ -45,7 +65,6 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                 format!(" {}", status_char)
             };
 
-            // Colour coding per status
             let name_style = if node.is_dir {
                 Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
             } else if node.is_untracked() {
@@ -71,9 +90,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                 _ => Style::default(),
             };
 
-            let row_style = if is_selected && focused {
-                Style::default().bg(Color::DarkGray)
-            } else if is_selected {
+            let row_style = if is_selected {
                 Style::default().bg(Color::DarkGray)
             } else {
                 Style::default()
@@ -89,12 +106,6 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let title = if app.visible.is_empty() {
-        " Files (no changes) ".to_string()
-    } else {
-        format!(" Files ({}/{}) ", app.tree_cursor + 1, app.visible.len())
-    };
-
     let list = List::new(items)
         .block(
             Block::default()
@@ -105,8 +116,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let mut list_state = ListState::default();
-    if !app.visible.is_empty() {
-        list_state.select(Some(app.tree_cursor));
+    if !tree.is_empty() {
+        list_state.select(Some(tree.cursor));
     }
 
     f.render_stateful_widget(list, area, &mut list_state);

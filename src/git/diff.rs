@@ -28,16 +28,14 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
 }
 
-/// Raw git diff output (used for operations)
-pub fn get_raw_diff(path: &str, staged_only: bool, repo_root: &Path) -> Result<String> {
-    let args: Vec<&str> = if staged_only {
+/// Raw git diff output (used for operations).
+/// staged=true  → `git diff --cached -- <path>` (index vs HEAD)
+/// staged=false → `git diff -- <path>` (working tree vs index)
+pub fn get_raw_diff(path: &str, staged: bool, repo_root: &Path) -> Result<String> {
+    let args: Vec<&str> = if staged {
         vec!["diff", "--cached", "--", path]
     } else {
-        // Try HEAD first; fall back to --cached for new repos without commits
-        match super::run_git(&["diff", "HEAD", "--", path], repo_root) {
-            Ok(out) => return Ok(out),
-            Err(_) => vec!["diff", "--cached", "--", path],
-        }
+        vec!["diff", "--", path]
     };
     super::run_git(&args, repo_root)
 }
@@ -45,23 +43,23 @@ pub fn get_raw_diff(path: &str, staged_only: bool, repo_root: &Path) -> Result<S
 /// Display diff (may be colored by delta/difftastic)
 pub fn get_display_diff(
     path: &str,
-    staged_only: bool,
+    staged: bool,
     tool: &str,
     pane_width: u16,
     repo_root: &Path,
 ) -> Result<String> {
     match tool {
-        "delta" => get_delta_diff(path, staged_only, pane_width, repo_root),
-        "difftastic" => get_difftastic_diff(path, staged_only, repo_root),
-        _ => get_raw_diff(path, staged_only, repo_root),
+        "delta" => get_delta_diff(path, staged, pane_width, repo_root),
+        "difftastic" => get_difftastic_diff(path, staged, repo_root),
+        _ => get_raw_diff(path, staged, repo_root),
     }
 }
 
-fn get_delta_diff(path: &str, staged_only: bool, pane_width: u16, repo_root: &Path) -> Result<String> {
-    let diff_args: Vec<&str> = if staged_only {
+fn get_delta_diff(path: &str, staged: bool, pane_width: u16, repo_root: &Path) -> Result<String> {
+    let diff_args: Vec<&str> = if staged {
         vec!["diff", "--cached", "--", path]
     } else {
-        vec!["diff", "HEAD", "--", path]
+        vec!["diff", "--", path]
     };
 
     let width_str = pane_width.to_string();
@@ -72,9 +70,6 @@ fn get_delta_diff(path: &str, staged_only: bool, pane_width: u16, repo_root: &Pa
         .stdout(Stdio::piped())
         .spawn()?;
 
-    // --width: explicitly set decoration/content width (most reliable)
-    // --paging=never: prevent pager from interfering with piped output
-    // COLUMNS: fallback for side-by-side mode width calculation
     let output = Command::new("delta")
         .args(["--width", &width_str, "--paging", "never"])
         .env("COLUMNS", &width_str)
@@ -84,11 +79,11 @@ fn get_delta_diff(path: &str, staged_only: bool, pane_width: u16, repo_root: &Pa
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn get_difftastic_diff(path: &str, staged_only: bool, repo_root: &Path) -> Result<String> {
-    let diff_args: Vec<&str> = if staged_only {
+fn get_difftastic_diff(path: &str, staged: bool, repo_root: &Path) -> Result<String> {
+    let diff_args: Vec<&str> = if staged {
         vec!["diff", "--cached", "--ext-diff", "--", path]
     } else {
-        vec!["diff", "HEAD", "--ext-diff", "--", path]
+        vec!["diff", "--ext-diff", "--", path]
     };
 
     let output = Command::new("git")
@@ -131,7 +126,6 @@ pub fn parse_diff(diff_text: &str) -> FileDiff {
             } else if line.starts_with(' ') {
                 hunk.lines.push(DiffLine::Context(line[1..].to_string()));
             }
-            // Skip "\ No newline at end of file"
         }
     }
 
@@ -143,7 +137,6 @@ pub fn parse_diff(diff_text: &str) -> FileDiff {
 }
 
 fn parse_hunk_header(line: &str) -> Option<Hunk> {
-    // Format: @@ -old_start[,old_count] +new_start[,new_count] @@[ context]
     let parts: Vec<&str> = line.splitn(5, ' ').collect();
     if parts.len() < 3 {
         return None;
@@ -198,7 +191,6 @@ index abc..def 100644
         assert_eq!(hunk.old_count, 5);
         assert_eq!(hunk.new_start, 1);
         assert_eq!(hunk.new_count, 6);
-        // context, removed, added, added, context
         assert_eq!(hunk.lines.len(), 5);
         assert!(matches!(hunk.lines[0], DiffLine::Context(_)));
         assert!(matches!(hunk.lines[1], DiffLine::Removed(_)));
