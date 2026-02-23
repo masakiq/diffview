@@ -17,7 +17,11 @@ pub fn run_git(args: &[&str], cwd: &Path) -> Result<String> {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(anyhow::anyhow!("git {} failed: {}", args.join(" "), stderr.trim()))
+        Err(anyhow::anyhow!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        ))
     }
 }
 
@@ -44,7 +48,11 @@ pub fn run_git_with_stdin(args: &[&str], stdin_data: &str, cwd: &Path) -> Result
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(anyhow::anyhow!("git {} failed: {}", args.join(" "), stderr.trim()))
+        Err(anyhow::anyhow!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        ))
     }
 }
 
@@ -58,6 +66,8 @@ pub fn get_repo_root() -> Result<std::path::PathBuf> {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(std::path::PathBuf::from(path))
     } else {
-        Err(anyhow::anyhow!("Not in a git repository. Run diffview from inside a git repo."))
+        Err(anyhow::anyhow!(
+            "Not in a git repository. Run diffview from inside a git repo."
+        ))
     }
 }

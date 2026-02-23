@@ -77,7 +77,7 @@ fn build_hunk_patch(file_path: &str, hunk: &Hunk) -> String {
     for line in &hunk.lines {
         match line {
             DiffLine::Context(s) => patch.push_str(&format!(" {}\n", s)),
-            DiffLine::Added(s)   => patch.push_str(&format!("+{}\n", s)),
+            DiffLine::Added(s) => patch.push_str(&format!("+{}\n", s)),
             DiffLine::Removed(s) => patch.push_str(&format!("-{}\n", s)),
         }
     }
@@ -94,11 +94,7 @@ fn build_hunk_patch(file_path: &str, hunk: &Hunk) -> String {
 ///   - Context lines → always kept as ` `
 ///
 /// Applied with: `git apply --cached`
-fn build_partial_patch(
-    file_path: &str,
-    hunk: &Hunk,
-    selected: &HashSet<usize>,
-) -> String {
+fn build_partial_patch(file_path: &str, hunk: &Hunk, selected: &HashSet<usize>) -> String {
     let mut body_lines: Vec<String> = Vec::new();
     let mut old_count: u32 = 0;
     let mut new_count: u32 = 0;
@@ -159,11 +155,7 @@ fn build_partial_patch(
 ///   - Unselected `-` (Removed from HEAD) → omitted (don't restore)
 ///
 /// Applied with: `git apply --cached` (no --reverse flag)
-fn build_reverse_partial_patch(
-    file_path: &str,
-    hunk: &Hunk,
-    selected: &HashSet<usize>,
-) -> String {
+fn build_reverse_partial_patch(file_path: &str, hunk: &Hunk, selected: &HashSet<usize>) -> String {
     let mut body_lines: Vec<String> = Vec::new();
     let mut old_count: u32 = 0;
     let mut new_count: u32 = 0;

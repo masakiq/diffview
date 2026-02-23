@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::clipboard;
 use crate::config::Config;
 use crate::git::diff::{parse_diff, FileDiff};
 use crate::git::status::get_status;
@@ -569,9 +570,12 @@ impl App {
             KeyCode::Enter => {
                 self.tree_enter()?;
             }
+            KeyCode::Char('c') => {
+                self.tree_copy_path_to_clipboard();
+            }
             KeyCode::Char('?') => {
                 self.status_message = Some(
-                    "j/k:move  l:open  h:back  Enter:stage/unstage  v:line-select  n/p:hunk  q:quit"
+                    "j/k:move  l:open  h:back  Enter:stage/unstage  c:copy-path  v:line-select  n/p:hunk  q:quit"
                         .to_string(),
                 );
             }
@@ -730,6 +734,26 @@ impl App {
 
         self.refresh_after_tree_op()?;
         Ok(())
+    }
+
+    fn tree_copy_path_to_clipboard(&mut self) {
+        let pane = match self.focused_pane() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let path = {
+            let section = self.tree(pane);
+            match section.current_node() {
+                Some(n) => n.path.to_string_lossy().to_string(),
+                None => return,
+            }
+        };
+
+        match clipboard::copy_text(&path) {
+            Ok(_) => self.status_message = Some(format!("Copied path: {}", path)),
+            Err(e) => self.error_message = Some(format!("Clipboard error: {}", e)),
+        }
     }
 
     /// Load diff preview when cursor moves in tree

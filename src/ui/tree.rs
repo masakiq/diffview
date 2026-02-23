@@ -21,11 +21,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
     let title = if tree.visible.is_empty() {
         format!(" {} (0) ", pane.label())
     } else {
-        format!(
-            " {} ({}) ",
-            pane.label(),
-            tree.file_count()
-        )
+        format!(" {} ({}) ", pane.label(), tree.file_count())
     };
 
     if tree.is_empty() {
@@ -48,7 +44,11 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
             let indent = "  ".repeat(node.depth);
 
             let prefix = if node.is_dir {
-                if node.expanded { "▼ " } else { "▶ " }
+                if node.expanded {
+                    "▼ "
+                } else {
+                    "▶ "
+                }
             } else {
                 "  "
             };
@@ -66,7 +66,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
             };
 
             let name_style = if node.is_dir {
-                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD)
             } else if node.is_untracked() {
                 Style::default().fg(Color::DarkGray)
             } else if node.is_unmerged() {

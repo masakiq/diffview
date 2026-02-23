@@ -50,6 +50,7 @@ diffview --tool raw        # default
 | `k` / `↑` | Move up                         |
 | `l`       | Show diff for the selected file |
 | `Enter`   | Stage/Unstage selected file/dir |
+| `c`       | Copy selected file path         |
 
 ### Diff View (right pane)
 

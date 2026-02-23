@@ -51,10 +51,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(inner, area);
 
     if app.current_file.is_none() {
-        let hint = Paragraph::new(
-            "Select a file and press 'l' to view its diff.",
-        )
-        .style(Style::default().fg(Color::DarkGray));
+        let hint = Paragraph::new("Select a file and press 'l' to view its diff.")
+            .style(Style::default().fg(Color::DarkGray));
         f.render_widget(hint, inner_area);
         return;
     }
@@ -102,9 +100,7 @@ fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
                     .unwrap_or(false);
 
                 let style = if is_cursor {
-                    base_style
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD)
+                    base_style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
                 } else if is_selectable {
                     base_style
                 } else {

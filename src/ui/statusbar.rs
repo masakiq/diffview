@@ -49,7 +49,7 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
 
     let ops = match app.focus {
         Focus::Unstaged | Focus::Staged => {
-            " [l]open [h]back [Enter]stage/unstage [j/k]move [?]help [q]quit"
+            " [l]open [h]back [Enter]stage/unstage [c]copy [j/k]move [?]help [q]quit"
         }
         Focus::DiffView => {
             if app.tool.supports_line_ops() {

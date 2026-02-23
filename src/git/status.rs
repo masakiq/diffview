@@ -65,7 +65,11 @@ pub fn parse_status(output: &str) -> Vec<GitFile> {
         let path = path.trim_matches('"').to_string();
 
         if !path.is_empty() {
-            files.push(GitFile { path, staged, unstaged });
+            files.push(GitFile {
+                path,
+                staged,
+                unstaged,
+            });
         }
     }
 

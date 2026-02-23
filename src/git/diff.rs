@@ -133,7 +133,11 @@ pub fn parse_diff(diff_text: &str) -> FileDiff {
         hunks.push(hunk);
     }
 
-    FileDiff { path, is_binary: false, hunks }
+    FileDiff {
+        path,
+        is_binary: false,
+        hunks,
+    }
 }
 
 fn parse_hunk_header(line: &str) -> Option<Hunk> {

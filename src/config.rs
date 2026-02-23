@@ -14,7 +14,9 @@ fn default_tool() -> String {
 
 impl Default for DiffConfig {
     fn default() -> Self {
-        Self { tool: default_tool() }
+        Self {
+            tool: default_tool(),
+        }
     }
 }
 
