@@ -26,10 +26,17 @@ cp target/release/diffview ~/.local/bin/
 # Open the git repository in the current directory
 diffview
 
+# Open a specific commit diff (read-only)
+diffview 891c1b80075d926818782019351d89aa8fe4ac96
+
 # Specify a diff tool
 diffview --tool delta
 diffview --tool difftastic
 diffview --tool raw        # default
+
+# Specify repository path explicitly
+diffview --path /path/to/repo
+diffview --path /path/to/repo 891c1b80075d926818782019351d89aa8fe4ac96
 ```
 
 ## Key Bindings
@@ -53,6 +60,8 @@ diffview --tool raw        # default
 | `Enter`   | Stage/Unstage selected file/dir |
 | `c`       | Copy selected file path         |
 
+> Commit mode (`diffview <REV>`) is read-only: `Enter` opens diff, no stage/unstage operations.
+
 ### Diff View (right pane)
 
 | Key       | Action                  |
@@ -74,6 +83,8 @@ diffview --tool raw        # default
 | `j` / `k` | Move cursor                  |
 | `Enter`   | Stage/Unstage selected lines |
 | `v`       | Exit line-select mode        |
+
+> Line-select mode is unavailable in commit mode.
 
 ## File Status Indicators
 

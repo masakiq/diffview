@@ -25,7 +25,12 @@ struct Args {
     #[arg(long, value_name = "TOOL")]
     tool: Option<String>,
 
+    /// Target commit-ish (e.g. hash, branch, tag). If omitted, working tree mode.
+    #[arg(value_name = "REV")]
+    revision: Option<String>,
+
     /// Repository path (default: current directory)
+    #[arg(long, value_name = "PATH")]
     path: Option<String>,
 }
 
@@ -42,7 +47,7 @@ async fn main() -> Result<()> {
 
     // ── Create app ──────────────────────────────────────────────────────
     let result = (|| -> Result<()> {
-        let mut app = app::App::new(args.tool, args.path)?;
+        let mut app = app::App::new(args.tool, args.path, args.revision)?;
         app.run(&mut terminal)
     })();
 

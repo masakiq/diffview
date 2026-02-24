@@ -35,8 +35,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let line = Line::from(spans);
-    let widget = Paragraph::new(line)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let widget = Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     f.render_widget(widget, area);
 }
 
@@ -47,20 +46,34 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
         DiffTool::Difftastic => " tool:difftastic ",
     };
 
-    let ops = match app.focus {
-        Focus::Unstaged | Focus::Staged => {
-            " [l]open [h]back [Enter]stage/unstage [c]copy [j/k]move [r]refresh [?]help [q]quit"
-        }
-        Focus::DiffView => {
-            if app.tool.supports_line_ops() {
-                " [j/k]scroll [h]back [v]select [n/p]hunk [r]refresh [q]quit"
-            } else {
-                " [j/k]scroll [h]back [n/p]hunk [r]refresh [q]quit"
+    let ops = if app.is_commit_mode() {
+        match app.focus {
+            Focus::Unstaged | Focus::Staged => {
+                " [l/Enter]open [h]back [c]copy [j/k]move [r]refresh [?]help [q]quit"
             }
+            Focus::DiffView => " [j/k]scroll [h]back [n/p]hunk [r]refresh [q]quit",
+            Focus::InlineSelect => " [j/k]move [n/p]hunk [v]back [h]tree [r]refresh",
         }
-        Focus::InlineSelect => {
-            " [j/k]move [Enter]apply [n/p]hunk [v]back [h]tree [r]refresh"
+    } else {
+        match app.focus {
+            Focus::Unstaged | Focus::Staged => {
+                " [l]open [h]back [Enter]stage/unstage [c]copy [j/k]move [r]refresh [?]help [q]quit"
+            }
+            Focus::DiffView => {
+                if app.tool.supports_line_ops() {
+                    " [j/k]scroll [h]back [v]select [n/p]hunk [r]refresh [q]quit"
+                } else {
+                    " [j/k]scroll [h]back [n/p]hunk [r]refresh [q]quit"
+                }
+            }
+            Focus::InlineSelect => " [j/k]move [Enter]apply [n/p]hunk [v]back [h]tree [r]refresh",
         }
+    };
+
+    let status_legend = if app.is_commit_mode() {
+        "  M=modified A=added D=deleted R=renamed C=copied"
+    } else {
+        "  M=modified A=added D=deleted ?=untracked"
     };
 
     vec![
@@ -72,9 +85,6 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(ops.to_string()),
-        Span::styled(
-            "  M=modified A=added D=deleted ?=untracked",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(status_legend, Style::default().fg(Color::DarkGray)),
     ]
 }

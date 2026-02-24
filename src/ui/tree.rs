@@ -18,10 +18,11 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let pane_label = app.tree_title(pane);
     let title = if tree.visible.is_empty() {
-        format!(" {} (0) ", pane.label())
+        format!(" {} (0) ", pane_label)
     } else {
-        format!(" {} ({}) ", pane.label(), tree.file_count())
+        format!(" {} ({}) ", pane_label, tree.file_count())
     };
 
     if tree.is_empty() {
@@ -78,6 +79,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
                     'M' => Style::default().fg(Color::Yellow),
                     'A' => Style::default().fg(Color::Green),
                     'D' => Style::default().fg(Color::Red),
+                    'R' | 'C' => Style::default().fg(Color::Cyan),
                     '?' => Style::default().fg(Color::DarkGray),
                     _ => Style::default(),
                 }
@@ -87,6 +89,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
                 'M' => Style::default().fg(Color::Yellow),
                 'A' => Style::default().fg(Color::Green),
                 'D' => Style::default().fg(Color::Red),
+                'R' | 'C' => Style::default().fg(Color::Cyan),
                 '?' => Style::default().fg(Color::DarkGray),
                 'U' => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                 _ => Style::default(),

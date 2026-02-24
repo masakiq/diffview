@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let origin_label = match app.diff_origin {
-        Some(pane) => pane.label().to_lowercase(),
+        Some(pane) => app.diff_origin_label(pane),
         None => String::new(),
     };
 

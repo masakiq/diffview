@@ -71,3 +71,9 @@ pub fn get_repo_root() -> Result<std::path::PathBuf> {
         ))
     }
 }
+
+pub fn resolve_commit(revision: &str, repo_root: &Path) -> Result<String> {
+    let rev_expr = format!("{}^{{commit}}", revision);
+    let output = run_git(&["rev-parse", "--verify", &rev_expr], repo_root)?;
+    Ok(output.trim().to_string())
+}

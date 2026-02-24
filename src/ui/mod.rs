@@ -30,24 +30,28 @@ pub fn render(f: &mut Frame, app: &App) {
     let tree_area = horiz[0];
     let diff_area = horiz[1];
 
-    // Split tree area vertically into unstaged (top) and staged (bottom)
-    let unstaged_items = app.unstaged.visible.len() as u32 + 2; // +2 for border
-    let staged_items = app.staged.visible.len() as u32 + 2;
-    let total = unstaged_items + staged_items;
+    if app.is_commit_mode() {
+        tree::render(f, app, tree_area, TreePane::Unstaged);
+    } else {
+        // Split tree area vertically into unstaged (top) and staged (bottom)
+        let unstaged_items = app.unstaged.visible.len() as u32 + 2; // +2 for border
+        let staged_items = app.staged.visible.len() as u32 + 2;
+        let total = unstaged_items + staged_items;
 
-    let tree_split = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Ratio(unstaged_items.max(3), total.max(6)),
-            Constraint::Ratio(staged_items.max(3), total.max(6)),
-        ])
-        .split(tree_area);
+        let tree_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Ratio(unstaged_items.max(3), total.max(6)),
+                Constraint::Ratio(staged_items.max(3), total.max(6)),
+            ])
+            .split(tree_area);
 
-    let unstaged_area = tree_split[0];
-    let staged_area = tree_split[1];
+        let unstaged_area = tree_split[0];
+        let staged_area = tree_split[1];
 
-    tree::render(f, app, unstaged_area, TreePane::Unstaged);
-    tree::render(f, app, staged_area, TreePane::Staged);
+        tree::render(f, app, unstaged_area, TreePane::Unstaged);
+        tree::render(f, app, staged_area, TreePane::Staged);
+    }
     diff::render(f, app, diff_area);
     statusbar::render(f, app, status_area);
 }

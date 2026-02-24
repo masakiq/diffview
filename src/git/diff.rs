@@ -40,6 +40,14 @@ pub fn get_raw_diff(path: &str, staged: bool, repo_root: &Path) -> Result<String
     super::run_git(&args, repo_root)
 }
 
+/// Raw diff for a specific commit and path.
+pub fn get_raw_commit_diff(revision: &str, path: &str, repo_root: &Path) -> Result<String> {
+    super::run_git(
+        &["show", "--format=", "--patch", revision, "--", path],
+        repo_root,
+    )
+}
+
 /// Display diff (may be colored by delta/difftastic)
 pub fn get_display_diff(
     path: &str,
@@ -52,6 +60,21 @@ pub fn get_display_diff(
         "delta" => get_delta_diff(path, staged, pane_width, repo_root),
         "difftastic" => get_difftastic_diff(path, staged, repo_root),
         _ => get_raw_diff(path, staged, repo_root),
+    }
+}
+
+/// Display diff for a specific commit and path (may be colored by delta/difftastic).
+pub fn get_display_commit_diff(
+    revision: &str,
+    path: &str,
+    tool: &str,
+    pane_width: u16,
+    repo_root: &Path,
+) -> Result<String> {
+    match tool {
+        "delta" => get_delta_commit_diff(revision, path, pane_width, repo_root),
+        "difftastic" => get_difftastic_commit_diff(revision, path, repo_root),
+        _ => get_raw_commit_diff(revision, path, repo_root),
     }
 }
 
@@ -79,6 +102,30 @@ fn get_delta_diff(path: &str, staged: bool, pane_width: u16, repo_root: &Path) -
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn get_delta_commit_diff(
+    revision: &str,
+    path: &str,
+    pane_width: u16,
+    repo_root: &Path,
+) -> Result<String> {
+    let diff_args: Vec<&str> = vec!["show", "--format=", "--patch", revision, "--", path];
+    let width_str = pane_width.to_string();
+
+    let git_proc = Command::new("git")
+        .args(&diff_args)
+        .current_dir(repo_root)
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let output = Command::new("delta")
+        .args(["--width", &width_str, "--paging", "never"])
+        .env("COLUMNS", &width_str)
+        .stdin(git_proc.stdout.unwrap())
+        .output()?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 fn get_difftastic_diff(path: &str, staged: bool, repo_root: &Path) -> Result<String> {
     let diff_args: Vec<&str> = if staged {
         vec!["diff", "--cached", "--ext-diff", "--", path]
@@ -88,6 +135,24 @@ fn get_difftastic_diff(path: &str, staged: bool, repo_root: &Path) -> Result<Str
 
     let output = Command::new("git")
         .args(&diff_args)
+        .env("GIT_EXTERNAL_DIFF", "difft")
+        .current_dir(repo_root)
+        .output()?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn get_difftastic_commit_diff(revision: &str, path: &str, repo_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args([
+            "show",
+            "--format=",
+            "--patch",
+            "--ext-diff",
+            revision,
+            "--",
+            path,
+        ])
         .env("GIT_EXTERNAL_DIFF", "difft")
         .current_dir(repo_root)
         .output()?;

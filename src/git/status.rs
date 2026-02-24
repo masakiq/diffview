@@ -42,6 +42,20 @@ pub fn get_status(repo_root: &Path) -> Result<Vec<GitFile>> {
     Ok(parse_status(&output))
 }
 
+pub fn get_commit_files(revision: &str, repo_root: &Path) -> Result<Vec<GitFile>> {
+    let output = super::run_git(
+        &[
+            "show",
+            "--format=",
+            "--name-status",
+            "--find-renames",
+            revision,
+        ],
+        repo_root,
+    )?;
+    Ok(parse_commit_name_status(&output))
+}
+
 pub fn parse_status(output: &str) -> Vec<GitFile> {
     let mut files = Vec::new();
 
@@ -76,6 +90,39 @@ pub fn parse_status(output: &str) -> Vec<GitFile> {
     files
 }
 
+pub fn parse_commit_name_status(output: &str) -> Vec<GitFile> {
+    let mut files = Vec::new();
+
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+
+        let status_token = parts[0];
+        let status = status_token.chars().next().unwrap_or(' ');
+        let path = match status {
+            // Rename/copy format: R100\told\tnew, C100\told\tnew
+            'R' | 'C' => parts.get(2).copied().unwrap_or(parts[1]),
+            _ => parts[1],
+        };
+
+        if !path.is_empty() {
+            files.push(GitFile {
+                path: path.to_string(),
+                staged: status,
+                unstaged: status,
+            });
+        }
+    }
+
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +146,25 @@ mod tests {
         let input = "R  old.rs -> new.rs\n";
         let files = parse_status(input);
         assert_eq!(files[0].path, "new.rs");
+    }
+
+    #[test]
+    fn test_parse_commit_name_status_basic() {
+        let input = "M\tsrc/main.rs\nA\tsrc/new.rs\nD\tsrc/old.rs\n";
+        let files = parse_commit_name_status(input);
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert_eq!(files[0].unstaged, 'M');
+        assert_eq!(files[1].unstaged, 'A');
+        assert_eq!(files[2].unstaged, 'D');
+    }
+
+    #[test]
+    fn test_parse_commit_name_status_rename() {
+        let input = "R100\tsrc/old.rs\tsrc/new.rs\n";
+        let files = parse_commit_name_status(input);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/new.rs");
+        assert_eq!(files[0].unstaged, 'R');
     }
 }

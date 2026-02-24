@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::clipboard;
 use crate::config::Config;
 use crate::git::diff::{parse_diff, FileDiff};
-use crate::git::status::get_status;
+use crate::git::status::{get_commit_files, get_status};
 
 // ─── Focus ──────────────────────────────────────────────────────────────────
 
@@ -105,7 +105,11 @@ impl TreeNode {
         match pane {
             TreePane::Unstaged => self.unstaged,
             TreePane::Staged => {
-                if self.staged == '?' { ' ' } else { self.staged }
+                if self.staged == '?' {
+                    ' '
+                } else {
+                    self.staged
+                }
             }
         }
     }
@@ -262,6 +266,7 @@ pub struct App {
     pub config: Config,
     pub tool: DiffTool,
     pub repo_root: PathBuf,
+    pub commit_revision: Option<String>,
 
     // Tree sections
     pub unstaged: TreeSection,
@@ -289,11 +294,16 @@ impl App {
     pub fn new(
         tool_override: Option<String>,
         path_override: Option<String>,
+        revision_override: Option<String>,
     ) -> Result<Self> {
         let repo_root = if let Some(p) = path_override {
             PathBuf::from(p)
         } else {
             crate::git::get_repo_root()?
+        };
+        let commit_revision = match revision_override {
+            Some(rev) => Some(crate::git::resolve_commit(&rev, &repo_root)?),
+            None => None,
         };
 
         let config = Config::load().unwrap_or_default();
@@ -310,6 +320,7 @@ impl App {
             config,
             tool,
             repo_root,
+            commit_revision,
             unstaged: TreeSection::new(),
             staged: TreeSection::new(),
             diff_origin: None,
@@ -333,7 +344,7 @@ impl App {
         app.refresh_trees()?;
 
         // Auto-focus: if unstaged is empty but staged has items, start in staged
-        if app.unstaged.is_empty() && !app.staged.is_empty() {
+        if !app.is_commit_mode() && app.unstaged.is_empty() && !app.staged.is_empty() {
             app.focus = Focus::Staged;
         }
 
@@ -351,10 +362,36 @@ impl App {
         };
         let section = self.tree(pane);
         if let Some(node) = section.current_node() {
-            if !node.is_dir && !node.is_untracked() {
+            if !node.is_dir && (self.is_commit_mode() || !node.is_untracked()) {
                 let path = node.path.to_string_lossy().to_string();
                 let _ = self.load_diff(&path, pane);
             }
+        }
+    }
+
+    pub fn is_commit_mode(&self) -> bool {
+        self.commit_revision.is_some()
+    }
+
+    pub fn commit_label(&self) -> Option<String> {
+        self.commit_revision
+            .as_ref()
+            .map(|rev| format!("commit {}", rev.chars().take(8).collect::<String>()))
+    }
+
+    pub fn tree_title(&self, pane: TreePane) -> &'static str {
+        if self.is_commit_mode() {
+            "Files"
+        } else {
+            pane.label()
+        }
+    }
+
+    pub fn diff_origin_label(&self, pane: TreePane) -> String {
+        if let Some(label) = self.commit_label() {
+            label
+        } else {
+            pane.label().to_lowercase()
         }
     }
 
@@ -368,6 +405,9 @@ impl App {
     }
 
     pub fn is_tree_focused(&self, pane: TreePane) -> bool {
+        if self.is_commit_mode() && pane == TreePane::Staged {
+            return false;
+        }
         match pane {
             TreePane::Unstaged => self.focus == Focus::Unstaged,
             TreePane::Staged => self.focus == Focus::Staged,
@@ -382,6 +422,13 @@ impl App {
     }
 
     fn focused_pane(&self) -> Option<TreePane> {
+        if self.is_commit_mode() {
+            return match self.focus {
+                Focus::Unstaged => Some(TreePane::Unstaged),
+                _ => None,
+            };
+        }
+
         match self.focus {
             Focus::Unstaged => Some(TreePane::Unstaged),
             Focus::Staged => Some(TreePane::Staged),
@@ -392,6 +439,25 @@ impl App {
     // ─── Tree building ───────────────────────────────────────────────────
 
     pub fn refresh_trees(&mut self) -> Result<()> {
+        if let Some(rev) = self.commit_revision.as_deref() {
+            let files = get_commit_files(rev, &self.repo_root)?;
+            let commit_files: Vec<(String, char, char)> = files
+                .into_iter()
+                .map(|f| (f.path, f.staged, f.unstaged))
+                .collect();
+
+            build_section(&mut self.unstaged.all_nodes, &commit_files);
+            rebuild_section_visible(&mut self.unstaged);
+
+            self.staged.all_nodes.clear();
+            self.staged.visible.clear();
+            self.staged.cursor = 0;
+            if self.focus == Focus::Staged {
+                self.focus = Focus::Unstaged;
+            }
+            return Ok(());
+        }
+
         let files = get_status(&self.repo_root)?;
 
         // Split files into unstaged and staged
@@ -421,17 +487,31 @@ impl App {
     // ─── Diff loading ────────────────────────────────────────────────────
 
     pub fn load_diff(&mut self, path: &str, pane: TreePane) -> Result<()> {
-        let raw = crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
-            .unwrap_or_default();
-
-        let display = crate::git::diff::get_display_diff(
-            path,
-            pane.is_staged(),
-            self.tool.name(),
-            self.diff_pane_width,
-            &self.repo_root,
-        )
-        .unwrap_or_else(|_| raw.clone());
+        let (raw, display) = if let Some(rev) = self.commit_revision.as_deref() {
+            let raw = crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
+                .unwrap_or_default();
+            let display = crate::git::diff::get_display_commit_diff(
+                rev,
+                path,
+                self.tool.name(),
+                self.diff_pane_width,
+                &self.repo_root,
+            )
+            .unwrap_or_else(|_| raw.clone());
+            (raw, display)
+        } else {
+            let raw = crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
+                .unwrap_or_default();
+            let display = crate::git::diff::get_display_diff(
+                path,
+                pane.is_staged(),
+                self.tool.name(),
+                self.diff_pane_width,
+                &self.repo_root,
+            )
+            .unwrap_or_else(|_| raw.clone());
+            (raw, display)
+        };
 
         self.raw_diff = raw.clone();
         self.display_diff = display;
@@ -520,32 +600,40 @@ impl App {
     }
 
     fn has_untracked_file_in_pane(&self, pane: TreePane, path: &str) -> bool {
-        self.tree(pane).all_nodes.iter().any(|n| {
-            !n.is_dir && n.path == Path::new(path) && n.is_untracked()
-        })
+        if self.is_commit_mode() {
+            return false;
+        }
+        self.tree(pane)
+            .all_nodes
+            .iter()
+            .any(|n| !n.is_dir && n.path == Path::new(path) && n.is_untracked())
     }
 
     fn refresh_latest_state(&mut self) -> Result<()> {
         let prev_focus = self.focus.clone();
         let prev_scroll = self.diff_scroll;
         let prev_cursor = self.diff_cursor;
-        let current = self
-            .current_file
-            .clone()
-            .zip(self.diff_origin);
+        let current = self.current_file.clone().zip(self.diff_origin);
 
         self.refresh_trees()?;
 
         // Keep focus unless the current tree became empty.
-        match prev_focus {
-            Focus::Unstaged if self.unstaged.is_empty() && !self.staged.is_empty() => {
-                self.focus = Focus::Staged;
-            }
-            Focus::Staged if self.staged.is_empty() && !self.unstaged.is_empty() => {
-                self.focus = Focus::Unstaged;
-            }
-            _ => {
-                self.focus = prev_focus;
+        if self.is_commit_mode() {
+            self.focus = match prev_focus {
+                Focus::DiffView | Focus::InlineSelect => Focus::DiffView,
+                _ => Focus::Unstaged,
+            };
+        } else {
+            match prev_focus {
+                Focus::Unstaged if self.unstaged.is_empty() && !self.staged.is_empty() => {
+                    self.focus = Focus::Staged;
+                }
+                Focus::Staged if self.staged.is_empty() && !self.unstaged.is_empty() => {
+                    self.focus = Focus::Unstaged;
+                }
+                _ => {
+                    self.focus = prev_focus;
+                }
             }
         }
 
@@ -569,7 +657,11 @@ impl App {
             }
         }
 
-        self.status_message = Some("Refreshed latest state".to_string());
+        self.status_message = Some(if let Some(label) = self.commit_label() {
+            format!("Refreshed {}", label)
+        } else {
+            "Refreshed latest state".to_string()
+        });
         Ok(())
     }
 
@@ -647,10 +739,12 @@ impl App {
                 self.tree_copy_path_to_clipboard();
             }
             KeyCode::Char('?') => {
-                self.status_message = Some(
+                let help = if self.is_commit_mode() {
+                    "j/k:move  l:open  h:back  Enter:open  c:copy-path  r:refresh  n/p:hunk  q:quit"
+                } else {
                     "j/k:move  l:open  h:back  Enter:stage/unstage  c:copy-path  r:refresh  v:line-select  n/p:hunk  q:quit"
-                        .to_string(),
-                );
+                };
+                self.status_message = Some(help.to_string());
             }
             _ => {}
         }
@@ -670,7 +764,7 @@ impl App {
 
         if can_move {
             self.tree_mut(pane).cursor += 1;
-        } else if pane == TreePane::Unstaged && !self.staged.is_empty() {
+        } else if !self.is_commit_mode() && pane == TreePane::Unstaged && !self.staged.is_empty() {
             self.focus = Focus::Staged;
             self.staged.cursor = 0;
         }
@@ -691,7 +785,7 @@ impl App {
 
         if can_move {
             self.tree_mut(pane).cursor -= 1;
-        } else if pane == TreePane::Staged && !self.unstaged.is_empty() {
+        } else if !self.is_commit_mode() && pane == TreePane::Staged && !self.unstaged.is_empty() {
             self.focus = Focus::Unstaged;
             self.unstaged.cursor = self.unstaged.visible.len().saturating_sub(1);
         }
@@ -709,7 +803,11 @@ impl App {
         let (is_dir, is_untracked, path) = {
             let section = self.tree(pane);
             match section.current_node() {
-                Some(n) => (n.is_dir, n.is_untracked(), n.path.to_string_lossy().to_string()),
+                Some(n) => (
+                    n.is_dir,
+                    n.is_untracked(),
+                    n.path.to_string_lossy().to_string(),
+                ),
                 None => return Ok(()),
             }
         };
@@ -718,7 +816,7 @@ impl App {
             self.tree_mut(pane).expand_and_enter();
             self.tree_load_preview();
         } else {
-            if is_untracked {
+            if is_untracked && !self.is_commit_mode() {
                 self.set_untracked_diff_message(path, pane);
             } else {
                 self.load_diff(&path, pane)?;
@@ -750,6 +848,10 @@ impl App {
 
     /// Enter key: stage/unstage file or dir
     fn tree_enter(&mut self) -> Result<()> {
+        if self.is_commit_mode() {
+            return self.tree_action_right();
+        }
+
         let pane = match self.focused_pane() {
             Some(p) => p,
             None => return Ok(()),
@@ -834,7 +936,11 @@ impl App {
         let (is_dir, is_untracked, path) = {
             let section = self.tree(pane);
             match section.current_node() {
-                Some(n) => (n.is_dir, n.is_untracked(), n.path.to_string_lossy().to_string()),
+                Some(n) => (
+                    n.is_dir,
+                    n.is_untracked(),
+                    n.path.to_string_lossy().to_string(),
+                ),
                 None => {
                     self.clear_diff();
                     return;
@@ -846,7 +952,7 @@ impl App {
             return;
         }
 
-        if is_untracked {
+        if is_untracked && !self.is_commit_mode() {
             self.set_untracked_diff_message(path, pane);
         } else {
             let _ = self.load_diff(&path, pane);
@@ -892,8 +998,7 @@ impl App {
                 }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.diff_scroll =
-                    (self.diff_scroll + half_page).min(line_count.saturating_sub(1));
+                self.diff_scroll = (self.diff_scroll + half_page).min(line_count.saturating_sub(1));
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.diff_scroll = self.diff_scroll.saturating_sub(half_page);
@@ -913,7 +1018,9 @@ impl App {
                     .unwrap_or(Focus::Unstaged);
             }
             KeyCode::Char('v') => {
-                if self.tool.supports_line_ops() {
+                if self.is_commit_mode() {
+                    self.error_message = Some("Commit diff is read-only".to_string());
+                } else if self.tool.supports_line_ops() {
                     if self.file_diff.hunks.is_empty() {
                         self.error_message = Some("No hunks to select lines from".to_string());
                     } else {
@@ -1005,8 +1112,7 @@ impl App {
                 }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.diff_cursor =
-                    (self.diff_cursor + half_page).min(line_count.saturating_sub(1));
+                self.diff_cursor = (self.diff_cursor + half_page).min(line_count.saturating_sub(1));
                 self.sync_hunk_cursor();
                 if self.diff_cursor >= self.diff_scroll + self.diff_pane_height {
                     self.diff_scroll = self.diff_cursor + 1 - self.diff_pane_height;
@@ -1047,6 +1153,11 @@ impl App {
     }
 
     fn apply_current_line(&mut self) -> Result<()> {
+        if self.is_commit_mode() {
+            self.error_message = Some("Commit diff is read-only".to_string());
+            return Ok(());
+        }
+
         let info = match self.line_infos.get(self.diff_cursor) {
             Some(i) => i.clone(),
             None => return Ok(()),
@@ -1092,7 +1203,11 @@ impl App {
 
         match result {
             Ok(_) => {
-                let action = if pane.is_staged() { "Unstaged" } else { "Staged" };
+                let action = if pane.is_staged() {
+                    "Unstaged"
+                } else {
+                    "Staged"
+                };
                 self.status_message = Some(format!("{} 1 line", action));
                 self.refresh_trees()?;
 
