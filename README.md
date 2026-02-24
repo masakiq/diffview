@@ -33,10 +33,6 @@ diffview 891c1b80075d926818782019351d89aa8fe4ac96
 diffview --tool delta
 diffview --tool difftastic
 diffview --tool raw        # default
-
-# Specify repository path explicitly
-diffview --path /path/to/repo
-diffview --path /path/to/repo 891c1b80075d926818782019351d89aa8fe4ac96
 ```
 
 ## Key Bindings

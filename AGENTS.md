@@ -16,7 +16,6 @@ cargo run -- --tool raw        # Run with raw diff (default)
 cargo run -- --tool delta      # Run with delta renderer
 cargo run -- --tool difftastic # Run with difftastic renderer
 cargo run -- 891c1b8           # Commit mode (read-only)
-cargo run -- --path /repo 891c1b8  # Commit mode with explicit repo path
 ```
 
 Requires rustc 1.88+. If compilation fails with syntax errors, run `rustup update stable`.
@@ -27,7 +26,7 @@ Rust TUI application for interacting with git diffs. Uses ratatui + crossterm fo
 
 ### Data Flow
 
-1. CLI: `diffview [OPTIONS] [REV]` (`REV` omitted = working tree mode, provided = commit mode)
+1. CLI: `diffview [--tool TOOL] [REV]` (`REV` omitted = working tree mode, provided = commit mode)
 2. Working tree mode: `git status --porcelain` → parsed into `Vec<GitFile>` (staged/unstaged char pair per file)
 3. Working tree mode: files split into two `TreeSection`s (unstaged vs staged), each with its own `BTreeMap`-based tree
 4. Commit mode: `git show --format= --name-status --find-renames <rev>` → single file tree section
@@ -71,7 +70,6 @@ The trickiest part of the codebase. Two distinct patch builders:
 ## Configuration
 
 `~/.config/diffview/config.toml` — only `diff.tool` setting (`"raw"` | `"delta"` | `"difftastic"`). CLI `--tool` flag overrides config.
-Repository path can be specified via CLI `--path <PATH>`.
 
 ## Diff Tool Constraints
 

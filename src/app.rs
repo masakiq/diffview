@@ -291,16 +291,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        tool_override: Option<String>,
-        path_override: Option<String>,
-        revision_override: Option<String>,
-    ) -> Result<Self> {
-        let repo_root = if let Some(p) = path_override {
-            PathBuf::from(p)
-        } else {
-            crate::git::get_repo_root()?
-        };
+    pub fn new(tool_override: Option<String>, revision_override: Option<String>) -> Result<Self> {
+        let repo_root = crate::git::get_repo_root()?;
         let commit_revision = match revision_override {
             Some(rev) => Some(crate::git::resolve_commit(&rev, &repo_root)?),
             None => None,
