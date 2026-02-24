@@ -453,6 +453,20 @@ impl App {
         self.current_file = None;
         self.diff_origin = None;
         self.diff_scroll = 0;
+        self.diff_cursor = 0;
+        self.hunk_cursor = 0;
+        self.line_infos.clear();
+    }
+
+    fn set_untracked_diff_message(&mut self, path: String, pane: TreePane) {
+        self.display_diff = "(untracked file – press Enter to stage it)".to_string();
+        self.raw_diff = String::new();
+        self.file_diff = FileDiff::default();
+        self.current_file = Some(path);
+        self.diff_origin = Some(pane);
+        self.diff_scroll = 0;
+        self.diff_cursor = 0;
+        self.hunk_cursor = 0;
         self.line_infos.clear();
     }
 
@@ -505,6 +519,60 @@ impl App {
         Ok(())
     }
 
+    fn has_untracked_file_in_pane(&self, pane: TreePane, path: &str) -> bool {
+        self.tree(pane).all_nodes.iter().any(|n| {
+            !n.is_dir && n.path == Path::new(path) && n.is_untracked()
+        })
+    }
+
+    fn refresh_latest_state(&mut self) -> Result<()> {
+        let prev_focus = self.focus.clone();
+        let prev_scroll = self.diff_scroll;
+        let prev_cursor = self.diff_cursor;
+        let current = self
+            .current_file
+            .clone()
+            .zip(self.diff_origin);
+
+        self.refresh_trees()?;
+
+        // Keep focus unless the current tree became empty.
+        match prev_focus {
+            Focus::Unstaged if self.unstaged.is_empty() && !self.staged.is_empty() => {
+                self.focus = Focus::Staged;
+            }
+            Focus::Staged if self.staged.is_empty() && !self.unstaged.is_empty() => {
+                self.focus = Focus::Unstaged;
+            }
+            _ => {
+                self.focus = prev_focus;
+            }
+        }
+
+        match self.focus {
+            Focus::Unstaged | Focus::Staged => {
+                self.tree_load_preview();
+            }
+            Focus::DiffView | Focus::InlineSelect => {
+                if let Some((path, pane)) = current {
+                    if self.has_untracked_file_in_pane(pane, &path) {
+                        self.set_untracked_diff_message(path, pane);
+                    } else {
+                        self.reload_current_diff()?;
+                        let line_count = self.raw_diff.lines().count();
+                        self.diff_scroll = prev_scroll.min(line_count.saturating_sub(1));
+                        self.diff_cursor = prev_cursor.min(line_count.saturating_sub(1));
+                    }
+                } else {
+                    self.clear_diff();
+                }
+            }
+        }
+
+        self.status_message = Some("Refreshed latest state".to_string());
+        Ok(())
+    }
+
     // ─── Main event loop ─────────────────────────────────────────────────
 
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
@@ -539,6 +607,11 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         self.error_message = None;
         self.status_message = None;
+
+        if key.code == KeyCode::Char('r') {
+            self.refresh_latest_state()?;
+            return Ok(());
+        }
 
         match self.focus {
             Focus::Unstaged | Focus::Staged => self.handle_tree_key(key)?,
@@ -575,7 +648,7 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.status_message = Some(
-                    "j/k:move  l:open  h:back  Enter:stage/unstage  c:copy-path  v:line-select  n/p:hunk  q:quit"
+                    "j/k:move  l:open  h:back  Enter:stage/unstage  c:copy-path  r:refresh  v:line-select  n/p:hunk  q:quit"
                         .to_string(),
                 );
             }
@@ -646,12 +719,7 @@ impl App {
             self.tree_load_preview();
         } else {
             if is_untracked {
-                self.display_diff = "(untracked file – press Enter to stage it)".to_string();
-                self.raw_diff = String::new();
-                self.file_diff = FileDiff::default();
-                self.current_file = Some(path);
-                self.diff_origin = Some(pane);
-                self.diff_scroll = 0;
+                self.set_untracked_diff_message(path, pane);
             } else {
                 self.load_diff(&path, pane)?;
             }
@@ -779,12 +847,7 @@ impl App {
         }
 
         if is_untracked {
-            self.display_diff = "(untracked file – press Enter to stage it)".to_string();
-            self.raw_diff = String::new();
-            self.file_diff = FileDiff::default();
-            self.current_file = Some(path);
-            self.diff_origin = Some(pane);
-            self.diff_scroll = 0;
+            self.set_untracked_diff_message(path, pane);
         } else {
             let _ = self.load_diff(&path, pane);
         }

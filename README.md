@@ -39,6 +39,7 @@ diffview --tool raw        # default
 | Key     | Action                             |
 | ------- | ---------------------------------- |
 | `h` `l` | Switch focus between tree and diff |
+| `r`     | Refresh to latest git state        |
 | `?`     | Show key binding help              |
 | `q`     | Quit                               |
 

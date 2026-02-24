@@ -28,7 +28,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     .bg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" j/k:move  Enter:apply  n/p:hunk  v:back  h:tree"),
+            Span::raw(" j/k:move  Enter:apply  n/p:hunk  v:back  h:tree  r:refresh"),
         ]
     } else {
         build_normal_statusbar(app)
@@ -49,17 +49,17 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
 
     let ops = match app.focus {
         Focus::Unstaged | Focus::Staged => {
-            " [l]open [h]back [Enter]stage/unstage [c]copy [j/k]move [?]help [q]quit"
+            " [l]open [h]back [Enter]stage/unstage [c]copy [j/k]move [r]refresh [?]help [q]quit"
         }
         Focus::DiffView => {
             if app.tool.supports_line_ops() {
-                " [j/k]scroll [h]back [v]select [n/p]hunk [q]quit"
+                " [j/k]scroll [h]back [v]select [n/p]hunk [r]refresh [q]quit"
             } else {
-                " [j/k]scroll [h]back [n/p]hunk [q]quit"
+                " [j/k]scroll [h]back [n/p]hunk [r]refresh [q]quit"
             }
         }
         Focus::InlineSelect => {
-            " [j/k]move [Enter]apply [n/p]hunk [v]back [h]tree"
+            " [j/k]move [Enter]apply [n/p]hunk [v]back [h]tree [r]refresh"
         }
     };
 
