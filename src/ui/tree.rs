@@ -11,6 +11,7 @@ use crate::app::{App, TreePane};
 pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
     let focused = app.is_tree_focused(pane);
     let tree = app.tree(pane);
+    let show_cursor = focused;
 
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -40,7 +41,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
         .enumerate()
         .map(|(display_idx, &node_idx)| {
             let node = &tree.all_nodes[node_idx];
-            let is_selected = display_idx == tree.cursor;
+            let is_selected = show_cursor && display_idx == tree.cursor;
 
             let indent = "  ".repeat(node.depth);
 
@@ -121,7 +122,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     let mut list_state = ListState::default();
-    if !tree.is_empty() {
+    if show_cursor && !tree.is_empty() {
         list_state.select(Some(tree.cursor));
     }
 
