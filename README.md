@@ -35,6 +35,20 @@ diffview --tool difftastic
 diffview --tool raw        # default
 ```
 
+## tig Integration
+
+You can open the selected commit in `tig` with `diffview` from the `main` view.
+
+Add this to `~/.tigrc`:
+
+```tigrc
+bind main   D !diffview %(commit)
+```
+
+Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
+
+> Note: `diffview` is a TUI app and requires terminal input/output (TTY). The `/dev/tty` redirection above ensures the child process is attached to the terminal when launched from `tig`.
+
 ## Key Bindings
 
 ### Global
