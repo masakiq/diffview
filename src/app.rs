@@ -662,8 +662,20 @@ impl App {
     pub fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         loop {
             let size = terminal.size()?;
-            self.diff_pane_width = ((size.width * 3) / 4).saturating_sub(2);
+            let maximized_diff = matches!(self.focus, Focus::DiffView | Focus::InlineSelect);
+            let next_diff_width = if maximized_diff {
+                size.width.saturating_sub(2)
+            } else {
+                ((size.width * 3) / 4).saturating_sub(2)
+            };
+            let diff_width_changed = self.diff_pane_width != next_diff_width;
+
+            self.diff_pane_width = next_diff_width;
             self.diff_pane_height = size.height.saturating_sub(3) as usize;
+
+            if diff_width_changed && self.tool == DiffTool::Delta && self.current_file.is_some() {
+                let _ = self.reload_current_diff();
+            }
 
             terminal.draw(|f| crate::ui::render(f, self))?;
 

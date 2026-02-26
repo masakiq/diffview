@@ -42,7 +42,6 @@ You can open the selected commit in `tig` with `diffview` from the `main` view.
 Add this to `~/.tigrc`:
 
 ```tigrc
-bind main   D !diffview %(commit)
 ```
 
 Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
