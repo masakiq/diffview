@@ -182,17 +182,6 @@ impl TreeSection {
         self.all_nodes.iter().filter(|n| !n.is_dir).count()
     }
 
-    /// Expand or collapse a directory node at cursor
-    fn set_expanded(&mut self, expanded: bool) {
-        if let Some(&idx) = self.visible.get(self.cursor) {
-            if self.all_nodes[idx].is_dir {
-                self.all_nodes[idx].expanded = expanded;
-                self.rebuild_visible();
-                self.clamp_cursor();
-            }
-        }
-    }
-
     /// Expand a directory and move cursor to its first child
     fn expand_and_enter(&mut self) {
         let cursor_vis_idx = self.cursor;
@@ -830,24 +819,14 @@ impl App {
         Ok(())
     }
 
-    /// h key: on dir always close, on file fold parent
+    /// h key: fold the parent directory of the current node
     fn tree_action_left(&mut self) {
         let pane = match self.focused_pane() {
             Some(p) => p,
             None => return,
         };
 
-        let is_dir = self
-            .tree(pane)
-            .current_node()
-            .map(|n| n.is_dir)
-            .unwrap_or(false);
-
-        if is_dir {
-            self.tree_mut(pane).set_expanded(false);
-        } else {
-            self.tree_mut(pane).fold_parent();
-        }
+        self.tree_mut(pane).fold_parent();
     }
 
     /// Enter key: stage/unstage file or dir
