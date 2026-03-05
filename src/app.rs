@@ -1,9 +1,15 @@
+use ansi_to_tui::IntoText;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{backend::Backend, Terminal};
-use std::collections::{BTreeMap, HashSet};
+use ratatui::{
+    backend::Backend,
+    text::{Line, Span, Text},
+    Terminal,
+};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::clipboard;
 use crate::config::Config;
@@ -22,7 +28,7 @@ pub enum Focus {
 
 // ─── TreePane ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TreePane {
     Unstaged,
     Staged,
@@ -50,7 +56,7 @@ impl TreePane {
 
 // ─── Diff tool ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DiffTool {
     Raw,
     Delta,
@@ -246,6 +252,35 @@ pub struct DisplayLineInfo {
     pub is_selectable: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PendingTreePreview {
+    pane: TreePane,
+    ready_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DiffCacheKey {
+    path: String,
+    pane: TreePane,
+    tool: DiffTool,
+    pane_width: u16,
+    commit_revision: Option<String>,
+}
+
+#[derive(Clone)]
+struct CachedDiff {
+    raw_diff: String,
+    display_diff: String,
+    file_diff: FileDiff,
+    line_infos: Vec<DisplayLineInfo>,
+    display_line_count: usize,
+    raw_line_count: usize,
+    cached_display_text: Option<Text<'static>>,
+}
+
+const DIFF_CACHE_CAPACITY: usize = 64;
+const TREE_PREVIEW_DEBOUNCE_MS: u64 = 100;
+
 // ─── App ───────────────────────────────────────────────────────────────────
 
 pub struct App {
@@ -271,8 +306,16 @@ pub struct App {
     pub hunk_cursor: usize,
     pub current_file: Option<String>,
     pub line_infos: Vec<DisplayLineInfo>,
+    pub display_line_count: usize,
+    pub raw_line_count: usize,
+    pub cached_display_text: Option<Text<'static>>,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
+    pending_tree_preview: Option<PendingTreePreview>,
+    tree_preview_debounce: Duration,
+    diff_cache: HashMap<DiffCacheKey, CachedDiff>,
+    diff_cache_order: VecDeque<DiffCacheKey>,
+    diff_cache_capacity: usize,
 
     // Status bar
     pub status_message: Option<String>,
@@ -313,11 +356,19 @@ impl App {
             hunk_cursor: 0,
             current_file: None,
             line_infos: Vec::new(),
+            display_line_count: 0,
+            raw_line_count: 0,
+            cached_display_text: None,
             diff_pane_height: 20,
             diff_pane_width: {
                 let w = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(120);
                 ((w * 3) / 4).saturating_sub(2)
             },
+            pending_tree_preview: None,
+            tree_preview_debounce: Duration::from_millis(TREE_PREVIEW_DEBOUNCE_MS),
+            diff_cache: HashMap::new(),
+            diff_cache_order: VecDeque::new(),
+            diff_cache_capacity: DIFF_CACHE_CAPACITY,
             status_message: None,
             error_message: None,
         };
@@ -467,42 +518,197 @@ impl App {
 
     // ─── Diff loading ────────────────────────────────────────────────────
 
-    pub fn load_diff(&mut self, path: &str, pane: TreePane) -> Result<()> {
-        let (raw, display) = if let Some(rev) = self.commit_revision.as_deref() {
-            let raw = crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
-                .unwrap_or_default();
-            let display = crate::git::diff::get_display_commit_diff(
-                rev,
-                path,
-                self.tool.name(),
-                self.diff_pane_width,
-                &self.repo_root,
-            )
-            .unwrap_or_else(|_| raw.clone());
-            (raw, display)
-        } else {
-            let raw = crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
-                .unwrap_or_default();
-            let display = crate::git::diff::get_display_diff(
-                path,
-                pane.is_staged(),
-                self.tool.name(),
-                self.diff_pane_width,
-                &self.repo_root,
-            )
-            .unwrap_or_else(|_| raw.clone());
-            (raw, display)
-        };
+    fn build_diff_cache_key(&self, path: &str, pane: TreePane) -> DiffCacheKey {
+        DiffCacheKey {
+            path: path.to_string(),
+            pane,
+            tool: self.tool.clone(),
+            pane_width: self.diff_pane_width,
+            commit_revision: self.commit_revision.clone(),
+        }
+    }
 
-        self.raw_diff = raw.clone();
-        self.display_diff = display;
-        self.file_diff = parse_diff(&raw);
+    fn touch_diff_cache_key(&mut self, key: DiffCacheKey) {
+        if let Some(pos) = self
+            .diff_cache_order
+            .iter()
+            .position(|existing| *existing == key)
+        {
+            self.diff_cache_order.remove(pos);
+        }
+        self.diff_cache_order.push_back(key);
+    }
+
+    fn get_cached_diff(&mut self, key: &DiffCacheKey) -> Option<CachedDiff> {
+        let cached = self.diff_cache.get(key).cloned();
+        if cached.is_some() {
+            self.touch_diff_cache_key(key.clone());
+        }
+        cached
+    }
+
+    fn insert_cached_diff(&mut self, key: DiffCacheKey, value: CachedDiff) {
+        if self.diff_cache.contains_key(&key) {
+            self.diff_cache.insert(key.clone(), value);
+            self.touch_diff_cache_key(key);
+            return;
+        }
+
+        if self.diff_cache.len() >= self.diff_cache_capacity {
+            if let Some(oldest) = self.diff_cache_order.pop_front() {
+                self.diff_cache.remove(&oldest);
+            }
+        }
+
+        self.diff_cache.insert(key.clone(), value);
+        self.diff_cache_order.push_back(key);
+    }
+
+    fn clear_diff_cache(&mut self) {
+        self.diff_cache.clear();
+        self.diff_cache_order.clear();
+    }
+
+    fn own_text(text: Text<'_>) -> Text<'static> {
+        let lines = text
+            .lines
+            .into_iter()
+            .map(|line| Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans: line
+                    .spans
+                    .into_iter()
+                    .map(|span| Span {
+                        style: span.style,
+                        content: Cow::Owned(span.content.into_owned()),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Text {
+            alignment: text.alignment,
+            style: text.style,
+            lines,
+        }
+    }
+
+    fn build_cached_display_text(&self, display: &str) -> Option<Text<'static>> {
+        if self.tool == DiffTool::Raw {
+            return None;
+        }
+        let parsed = display.as_bytes().into_text().ok()?;
+        Some(Self::own_text(parsed))
+    }
+
+    fn apply_loaded_diff_state(
+        &mut self,
+        path: &str,
+        pane: TreePane,
+        raw_diff: String,
+        display_diff: String,
+        file_diff: FileDiff,
+        line_infos: Vec<DisplayLineInfo>,
+        display_line_count: usize,
+        raw_line_count: usize,
+        cached_display_text: Option<Text<'static>>,
+    ) {
+        self.raw_diff = raw_diff;
+        self.display_diff = display_diff;
+        self.file_diff = file_diff;
+        self.line_infos = line_infos;
+        self.display_line_count = display_line_count;
+        self.raw_line_count = raw_line_count;
+        self.cached_display_text = cached_display_text;
         self.current_file = Some(path.to_string());
         self.diff_origin = Some(pane);
         self.diff_scroll = 0;
         self.diff_cursor = 0;
         self.hunk_cursor = 0;
+    }
+
+    pub fn load_diff(&mut self, path: &str, pane: TreePane) -> Result<()> {
+        let cache_key = self.build_diff_cache_key(path, pane);
+        if let Some(cached) = self.get_cached_diff(&cache_key) {
+            self.apply_loaded_diff_state(
+                path,
+                pane,
+                cached.raw_diff,
+                cached.display_diff,
+                cached.file_diff,
+                cached.line_infos,
+                cached.display_line_count,
+                cached.raw_line_count,
+                cached.cached_display_text,
+            );
+            return Ok(());
+        }
+
+        let (raw, display) = if let Some(rev) = self.commit_revision.as_deref() {
+            let raw = crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
+                .unwrap_or_default();
+            let display = if self.tool == DiffTool::Raw {
+                raw.clone()
+            } else {
+                crate::git::diff::get_display_commit_diff(
+                    rev,
+                    path,
+                    self.tool.name(),
+                    self.diff_pane_width,
+                    &self.repo_root,
+                )
+                .unwrap_or_else(|_| raw.clone())
+            };
+            (raw, display)
+        } else {
+            let raw = crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
+                .unwrap_or_default();
+            let display = if self.tool == DiffTool::Raw {
+                raw.clone()
+            } else {
+                crate::git::diff::get_display_diff(
+                    path,
+                    pane.is_staged(),
+                    self.tool.name(),
+                    self.diff_pane_width,
+                    &self.repo_root,
+                )
+                .unwrap_or_else(|_| raw.clone())
+            };
+            (raw, display)
+        };
+
+        let file_diff = parse_diff(&raw);
+        let raw_line_count = raw.lines().count();
+        let display_line_count = display.lines().count();
+        let cached_display_text = self.build_cached_display_text(&display);
+
+        self.apply_loaded_diff_state(
+            path,
+            pane,
+            raw.clone(),
+            display.clone(),
+            file_diff.clone(),
+            Vec::new(),
+            display_line_count,
+            raw_line_count,
+            cached_display_text.clone(),
+        );
         self.build_line_infos();
+
+        self.insert_cached_diff(
+            cache_key,
+            CachedDiff {
+                raw_diff: raw,
+                display_diff: display,
+                file_diff,
+                line_infos: self.line_infos.clone(),
+                display_line_count: self.display_line_count,
+                raw_line_count: self.raw_line_count,
+                cached_display_text,
+            },
+        );
 
         Ok(())
     }
@@ -517,6 +723,9 @@ impl App {
         self.diff_cursor = 0;
         self.hunk_cursor = 0;
         self.line_infos.clear();
+        self.raw_line_count = 0;
+        self.display_line_count = 0;
+        self.cached_display_text = None;
     }
 
     fn set_untracked_diff_message(&mut self, path: String, pane: TreePane) {
@@ -529,6 +738,9 @@ impl App {
         self.diff_cursor = 0;
         self.hunk_cursor = 0;
         self.line_infos.clear();
+        self.raw_line_count = 0;
+        self.display_line_count = self.display_diff.lines().count();
+        self.cached_display_text = None;
     }
 
     fn build_line_infos(&mut self) {
@@ -573,7 +785,7 @@ impl App {
             let prev_scroll = self.diff_scroll;
             let prev_cursor = self.diff_cursor;
             self.load_diff(&path, pane)?;
-            let line_count = self.raw_diff.lines().count();
+            let line_count = self.raw_line_count;
             self.diff_scroll = prev_scroll.min(line_count.saturating_sub(1));
             self.diff_cursor = prev_cursor.min(line_count.saturating_sub(1));
         }
@@ -590,11 +802,49 @@ impl App {
             .any(|n| !n.is_dir && n.path == Path::new(path) && n.is_untracked())
     }
 
+    fn schedule_tree_preview(&mut self, pane: TreePane) {
+        self.pending_tree_preview = Some(PendingTreePreview {
+            pane,
+            ready_at: Instant::now() + self.tree_preview_debounce,
+        });
+    }
+
+    fn flush_pending_tree_preview_if_due(&mut self) {
+        let pending = match self.pending_tree_preview.clone() {
+            Some(p) => p,
+            None => return,
+        };
+        if Instant::now() < pending.ready_at {
+            return;
+        }
+
+        self.pending_tree_preview = None;
+        if self.focused_pane() == Some(pending.pane) {
+            self.tree_load_preview_for_pane(pending.pane);
+        }
+    }
+
+    fn event_poll_timeout(&self) -> Duration {
+        let base = Duration::from_millis(50);
+        let Some(pending) = &self.pending_tree_preview else {
+            return base;
+        };
+
+        let remaining = pending.ready_at.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Duration::ZERO
+        } else {
+            remaining.min(base)
+        }
+    }
+
     fn refresh_latest_state(&mut self) -> Result<()> {
         let prev_focus = self.focus.clone();
         let prev_scroll = self.diff_scroll;
         let prev_cursor = self.diff_cursor;
         let current = self.current_file.clone().zip(self.diff_origin);
+        self.clear_diff_cache();
+        self.pending_tree_preview = None;
 
         self.refresh_trees()?;
 
@@ -628,7 +878,7 @@ impl App {
                         self.set_untracked_diff_message(path, pane);
                     } else {
                         self.reload_current_diff()?;
-                        let line_count = self.raw_diff.lines().count();
+                        let line_count = self.raw_line_count;
                         self.diff_scroll = prev_scroll.min(line_count.saturating_sub(1));
                         self.diff_cursor = prev_cursor.min(line_count.saturating_sub(1));
                     }
@@ -666,17 +916,28 @@ impl App {
                 let _ = self.reload_current_diff();
             }
 
+            self.flush_pending_tree_preview_if_due();
             terminal.draw(|f| crate::ui::render(f, self))?;
 
-            if crossterm::event::poll(Duration::from_millis(50))? {
-                match crossterm::event::read()? {
-                    crossterm::event::Event::Key(key) => self.handle_key(key)?,
-                    crossterm::event::Event::Resize(_, _) => {
-                        if self.tool == DiffTool::Delta && self.current_file.is_some() {
-                            let _ = self.reload_current_diff();
+            let poll_timeout = self.event_poll_timeout();
+            if crossterm::event::poll(poll_timeout)? {
+                let mut saw_resize = false;
+                loop {
+                    match crossterm::event::read()? {
+                        crossterm::event::Event::Key(key) => self.handle_key(key)?,
+                        crossterm::event::Event::Resize(_, _) => {
+                            saw_resize = true;
                         }
+                        _ => {}
                     }
-                    _ => {}
+
+                    if !crossterm::event::poll(Duration::ZERO)? {
+                        break;
+                    }
+                }
+
+                if saw_resize && self.tool == DiffTool::Delta && self.current_file.is_some() {
+                    let _ = self.reload_current_diff();
                 }
             }
 
@@ -709,6 +970,13 @@ impl App {
     // ─── Tree key handling ──────────────────────────────────────────────
 
     fn handle_tree_key(&mut self, key: KeyEvent) -> Result<()> {
+        if !matches!(
+            key.code,
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up
+        ) {
+            self.pending_tree_preview = None;
+        }
+
         match key.code {
             KeyCode::Char('q') => {
                 self.should_quit = true;
@@ -755,14 +1023,22 @@ impl App {
             !tree.is_empty() && tree.cursor + 1 < tree.visible.len()
         };
 
-        if can_move {
+        let moved = if can_move {
             self.tree_mut(pane).cursor += 1;
+            true
         } else if !self.is_commit_mode() && pane == TreePane::Unstaged && !self.staged.is_empty() {
             self.focus = Focus::Staged;
             self.staged.cursor = 0;
-        }
+            true
+        } else {
+            false
+        };
 
-        self.tree_load_preview();
+        if moved {
+            if let Some(next_pane) = self.focused_pane() {
+                self.schedule_tree_preview(next_pane);
+            }
+        }
     }
 
     fn tree_move_up(&mut self) {
@@ -776,14 +1052,22 @@ impl App {
             tree.cursor > 0
         };
 
-        if can_move {
+        let moved = if can_move {
             self.tree_mut(pane).cursor -= 1;
+            true
         } else if !self.is_commit_mode() && pane == TreePane::Staged && !self.unstaged.is_empty() {
             self.focus = Focus::Unstaged;
             self.unstaged.cursor = self.unstaged.visible.len().saturating_sub(1);
-        }
+            true
+        } else {
+            false
+        };
 
-        self.tree_load_preview();
+        if moved {
+            if let Some(next_pane) = self.focused_pane() {
+                self.schedule_tree_preview(next_pane);
+            }
+        }
     }
 
     /// l key: expand dir (and move cursor to first child) or open file diff
@@ -931,7 +1215,10 @@ impl App {
             Some(p) => p,
             None => return,
         };
+        self.tree_load_preview_for_pane(pane);
+    }
 
+    fn tree_load_preview_for_pane(&mut self, pane: TreePane) {
         let (is_dir, is_untracked, path) = {
             let section = self.tree(pane);
             match section.current_node() {
@@ -959,6 +1246,9 @@ impl App {
     }
 
     fn refresh_after_tree_op(&mut self) -> Result<()> {
+        self.clear_diff_cache();
+        self.pending_tree_preview = None;
+
         let prev_focus = self.focus.clone();
         self.refresh_trees()?;
 
@@ -979,7 +1269,7 @@ impl App {
     // ─── Diff view key handling ─────────────────────────────────────────
 
     fn handle_diff_key(&mut self, key: KeyEvent) -> Result<()> {
-        let line_count = self.display_diff.lines().count();
+        let line_count = self.display_line_count;
         let half_page = (self.diff_pane_height / 2).max(1);
 
         match key.code {
@@ -1088,7 +1378,7 @@ impl App {
     // ─── Inline select key handling ─────────────────────────────────────
 
     fn handle_inline_select_key(&mut self, key: KeyEvent) -> Result<()> {
-        let line_count = self.raw_diff.lines().count();
+        let line_count = self.raw_line_count;
         let half_page = (self.diff_pane_height / 2).max(1);
 
         match key.code {
@@ -1211,6 +1501,7 @@ impl App {
                     "Staged"
                 };
                 self.status_message = Some(format!("{} 1 line", action));
+                self.clear_diff_cache();
                 self.refresh_trees()?;
 
                 let prev_cursor = self.diff_cursor;

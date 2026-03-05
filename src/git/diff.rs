@@ -87,17 +87,24 @@ fn get_delta_diff(path: &str, staged: bool, pane_width: u16, repo_root: &Path) -
 
     let width_str = pane_width.to_string();
 
-    let git_proc = Command::new("git")
+    let mut git_proc = Command::new("git")
         .args(&diff_args)
         .current_dir(repo_root)
         .stdout(Stdio::piped())
         .spawn()?;
 
+    let git_stdout = git_proc
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to capture git diff stdout"))?;
+
     let output = Command::new("delta")
         .args(["--width", &width_str, "--paging", "never"])
         .env("COLUMNS", &width_str)
-        .stdin(git_proc.stdout.unwrap())
+        .stdin(git_stdout)
         .output()?;
+
+    let _ = git_proc.wait()?;
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -111,17 +118,24 @@ fn get_delta_commit_diff(
     let diff_args: Vec<&str> = vec!["show", "--format=", "--patch", revision, "--", path];
     let width_str = pane_width.to_string();
 
-    let git_proc = Command::new("git")
+    let mut git_proc = Command::new("git")
         .args(&diff_args)
         .current_dir(repo_root)
         .stdout(Stdio::piped())
         .spawn()?;
 
+    let git_stdout = git_proc
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to capture git show stdout"))?;
+
     let output = Command::new("delta")
         .args(["--width", &width_str, "--paging", "never"])
         .env("COLUMNS", &width_str)
-        .stdin(git_proc.stdout.unwrap())
+        .stdin(git_stdout)
         .output()?;
+
+    let _ = git_proc.wait()?;
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }

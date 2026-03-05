@@ -1,4 +1,3 @@
-use ansi_to_tui::IntoText;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -73,10 +72,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         let para = Paragraph::new(text).scroll((scroll, 0));
         f.render_widget(para, inner_area);
     } else {
-        let text = content
-            .as_bytes()
-            .into_text()
-            .unwrap_or_else(|_| build_raw_diff_text(app, content));
+        let text = app
+            .cached_display_text
+            .clone()
+            .unwrap_or_else(|| build_raw_diff_text(app, content));
         let para = Paragraph::new(text).scroll((scroll, 0));
         f.render_widget(para, inner_area);
     }
