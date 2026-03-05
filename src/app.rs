@@ -903,7 +903,23 @@ impl App {
             }
         };
 
-        match clipboard::copy_text(&path) {
+        self.copy_path_to_clipboard(&path);
+    }
+
+    fn diff_copy_path_to_clipboard(&mut self) {
+        let path = match self.current_file.clone() {
+            Some(path) => path,
+            None => {
+                self.error_message = Some("No file selected".to_string());
+                return;
+            }
+        };
+
+        self.copy_path_to_clipboard(&path);
+    }
+
+    fn copy_path_to_clipboard(&mut self, path: &str) {
+        match clipboard::copy_text(path) {
             Ok(_) => self.status_message = Some(format!("Copied path: {}", path)),
             Err(e) => self.error_message = Some(format!("Clipboard error: {}", e)),
         }
@@ -994,6 +1010,9 @@ impl App {
             }
             KeyCode::Char('n') => self.jump_next_hunk(),
             KeyCode::Char('p') => self.jump_prev_hunk(),
+            KeyCode::Char('c') => {
+                self.diff_copy_path_to_clipboard();
+            }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.focus = self
                     .diff_origin

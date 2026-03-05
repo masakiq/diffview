@@ -51,7 +51,7 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
             Focus::Unstaged | Focus::Staged => {
                 " [l/Enter]open [h]back [c]copy [j/k]move [r]refresh [?]help [q]quit"
             }
-            Focus::DiffView => " [j/k]scroll [h]back [n/p]hunk [r]refresh [q]quit",
+            Focus::DiffView => " [j/k]scroll [h]back [c]copy [n/p]hunk [r]refresh [q]quit",
             Focus::InlineSelect => " [j/k]move [n/p]hunk [v]back [h]tree [r]refresh",
         }
     } else {
@@ -61,9 +61,9 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
             }
             Focus::DiffView => {
                 if app.tool.supports_line_ops() {
-                    " [j/k]scroll [h]back [v]select [n/p]hunk [r]refresh [q]quit"
+                    " [j/k]scroll [h]back [c]copy [v]select [n/p]hunk [r]refresh [q]quit"
                 } else {
-                    " [j/k]scroll [h]back [n/p]hunk [r]refresh [q]quit"
+                    " [j/k]scroll [h]back [c]copy [n/p]hunk [r]refresh [q]quit"
                 }
             }
             Focus::InlineSelect => " [j/k]move [Enter]apply [n/p]hunk [v]back [h]tree [r]refresh",
