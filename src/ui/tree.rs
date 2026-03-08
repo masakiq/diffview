@@ -1,12 +1,13 @@
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Span,
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
 
 use crate::app::{App, TreePane};
+use crate::ui::highlight::highlight_line;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
     let focused = app.is_tree_focused(pane);
@@ -42,18 +43,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
         .map(|(display_idx, &node_idx)| {
             let node = &tree.all_nodes[node_idx];
             let is_selected = show_cursor && display_idx == tree.cursor;
-
-            let indent = "  ".repeat(node.depth);
-
-            let prefix = if node.is_dir {
-                if node.expanded {
-                    "▼ "
-                } else {
-                    "▶ "
-                }
-            } else {
-                "  "
-            };
+            let prefix = node.display_prefix();
 
             let status_char = if node.is_dir {
                 ' '
@@ -61,11 +51,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
                 node.status_for(pane)
             };
 
-            let status_str = if status_char == ' ' || node.is_dir {
-                String::new()
-            } else {
-                format!(" {}", status_char)
-            };
+            let status_str = node.display_status_suffix(pane);
 
             let name_style = if node.is_dir {
                 Style::default()
@@ -103,12 +89,12 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
             };
 
             let spans = vec![
-                Span::styled(format!("{}{}", indent, prefix), row_style),
+                Span::styled(prefix, row_style),
                 Span::styled(node.name.clone(), name_style.patch(row_style)),
                 Span::styled(status_str, status_style.patch(row_style)),
             ];
 
-            ListItem::new(Line::from(spans))
+            ListItem::new(highlight_line(spans, app.tree_search_query(pane)))
         })
         .collect();
 

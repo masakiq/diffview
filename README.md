@@ -42,6 +42,7 @@ You can open the selected commit in `tig` with `diffview` from the `main` view.
 Add this to `~/.tigrc`:
 
 ```tigrc
+
 ```
 
 Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
@@ -61,37 +62,53 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 
 ### File Tree (left pane)
 
-| Key       | Action                          |
-| --------- | ------------------------------- |
-| `j` / `↓` | Move down                       |
-| `k` / `↑` | Move up                         |
-| `l`       | Show diff for the selected file |
-| `Enter`   | Stage/Unstage selected file/dir |
-| `c`       | Copy selected file path         |
+| Key       | Action                                              |
+| --------- | --------------------------------------------------- |
+| `j` / `↓` | Move down                                           |
+| `k` / `↑` | Move up                                             |
+| `Ctrl+D`  | Move down 5 lines                                   |
+| `Ctrl+U`  | Move up 5 lines                                     |
+| `l`       | Show diff for the selected file                     |
+| `Enter`   | Stage/Unstage selected file/dir                     |
+| `c`       | Copy selected file path                             |
+| `/`       | Start tree search                                   |
+| `n` / `N` | Jump to next / previous match                       |
+| `C`       | Run the commit command (`git commit -v` by default) |
 
 > Commit mode (`diffview <REV>`) is read-only: `Enter` opens diff, no stage/unstage operations.
+> Tree search is case-insensitive. In working-tree mode it scans all files in both `Unstaged` and `Staged`, including collapsed entries.
 
 ### Diff View (right pane)
 
-| Key       | Action                  |
-| --------- | ----------------------- |
-| `j` / `↓` | Scroll down one line    |
-| `k` / `↑` | Scroll up one line      |
-| `Ctrl+D`  | Scroll down half a page |
-| `Ctrl+U`  | Scroll up half a page   |
-| `g`       | Jump to top             |
-| `G`       | Jump to bottom          |
-| `n`       | Jump to next hunk       |
-| `p`       | Jump to previous hunk   |
-| `v`       | Enter line-select mode  |
+| Key       | Action                                              |
+| --------- | --------------------------------------------------- |
+| `j` / `↓` | Scroll down one line                                |
+| `k` / `↑` | Scroll up one line                                  |
+| `Ctrl+D`  | Scroll down half a page                             |
+| `Ctrl+U`  | Scroll up half a page                               |
+| `g`       | Jump to top                                         |
+| `G`       | Jump to bottom                                      |
+| `/`       | Start pane-local search                             |
+| `n` / `N` | Jump to next / previous match                       |
+| `]`       | Jump to next hunk                                   |
+| `[`       | Jump to previous hunk                               |
+| `v`       | Enter line-select mode                              |
+| `C`       | Run the commit command (`git commit -v` by default) |
 
 ### Line-Select Mode (started with `v`)
 
-| Key       | Action                       |
-| --------- | ---------------------------- |
-| `j` / `k` | Move cursor                  |
-| `Enter`   | Stage/Unstage selected lines |
-| `v`       | Exit line-select mode        |
+| Key       | Action                        |
+| --------- | ----------------------------- |
+| `j` / `k` | Move cursor                   |
+| `Ctrl+D`  | Jump down half a page         |
+| `Ctrl+U`  | Jump up half a page           |
+| `Enter`   | Stage/Unstage selected lines  |
+| `/`       | Start pane-local search       |
+| `n` / `N` | Jump to next / previous match |
+| `]` / `[` | Jump between hunks            |
+| `v`       | Exit line-select mode         |
+
+> Search is case-insensitive in every pane.
 
 > Line-select mode is unavailable in commit mode.
 
@@ -142,6 +159,16 @@ Settings can be specified in `~/.config/diffview/config.toml`.
 [diff]
 # "raw" | "delta" | "difftastic"
 tool = "raw"
+
+# Width of the left tree pane as a percentage.
+tree_width_percentage = 25
+
+[diff.commit]
+# Key used in working-tree diff view.
+key = "C"
+
+# Command run after temporarily leaving the TUI.
+command = ["git", "commit", "-v"]
 ```
 
 Command-line arguments take precedence over the configuration file.

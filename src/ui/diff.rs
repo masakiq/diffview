@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, DiffTool, Focus};
+use crate::ui::highlight::{highlight_line, highlight_text};
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let focused = matches!(app.focus, Focus::DiffView | Focus::InlineSelect);
@@ -76,13 +77,15 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             .cached_display_text
             .clone()
             .unwrap_or_else(|| build_raw_diff_text(app, content));
-        let para = Paragraph::new(text).scroll((scroll, 0));
+        let para =
+            Paragraph::new(highlight_text(text, app.diff_search_query())).scroll((scroll, 0));
         f.render_widget(para, inner_area);
     }
 }
 
 fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
     let inline_select = app.focus == Focus::InlineSelect;
+    let search_query = app.diff_search_query();
 
     let lines: Vec<Line<'a>> = content
         .lines()
@@ -106,9 +109,12 @@ fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
                     base_style
                 };
 
-                Line::from(Span::styled(line.to_string(), style))
+                highlight_line(vec![Span::styled(line.to_string(), style)], search_query)
             } else {
-                Line::from(Span::styled(line.to_string(), base_style))
+                highlight_line(
+                    vec![Span::styled(line.to_string(), base_style)],
+                    search_query,
+                )
             }
         })
         .collect();

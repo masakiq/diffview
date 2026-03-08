@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub mod apply;
 pub mod diff;
@@ -76,4 +76,33 @@ pub fn resolve_commit(revision: &str, repo_root: &Path) -> Result<String> {
     let rev_expr = format!("{}^{{commit}}", revision);
     let output = run_git(&["rev-parse", "--verify", &rev_expr], repo_root)?;
     Ok(output.trim().to_string())
+}
+
+pub fn run_interactive_command(command: &[String], cwd: &Path) -> Result<()> {
+    let (program, args) = command
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("Interactive command is empty"))?;
+
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("Failed to run: {}", command.join(" ")))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        let reason = status
+            .code()
+            .map(|code| format!("exit code {}", code))
+            .unwrap_or_else(|| "terminated by signal".to_string());
+        Err(anyhow::anyhow!(
+            "{} failed with {}",
+            command.join(" "),
+            reason
+        ))
+    }
 }

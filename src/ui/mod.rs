@@ -1,4 +1,5 @@
 pub mod diff;
+pub mod highlight;
 pub mod statusbar;
 pub mod tree;
 
@@ -30,7 +31,10 @@ pub fn render(f: &mut Frame, app: &App) {
     // Split main area horizontally: tree pane (1/4) + diff pane (3/4)
     let horiz = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 4), Constraint::Ratio(3, 4)])
+        .constraints([
+            Constraint::Percentage(app.tree_pane_percentage()),
+            Constraint::Percentage(app.diff_pane_percentage()),
+        ])
         .split(main_area);
 
     let tree_area = horiz[0];
