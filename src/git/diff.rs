@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -28,6 +29,12 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePreview {
+    pub content: String,
+    pub uses_ansi: bool,
+}
+
 /// Raw git diff output (used for operations).
 /// staged=true  → `git diff --cached -- <path>` (index vs HEAD)
 /// staged=false → `git diff -- <path>` (working tree vs index)
@@ -46,6 +53,54 @@ pub fn get_raw_commit_diff(revision: &str, path: &str, repo_root: &Path) -> Resu
         &["show", "--format=", "--patch", revision, "--", path],
         repo_root,
     )
+}
+
+/// File preview for content that `git diff` cannot render, such as untracked files.
+pub fn get_file_preview(path: &str, repo_root: &Path) -> Result<FilePreview> {
+    let preview_commands = [
+        (
+            "bat",
+            vec![
+                "--paging=never",
+                "--color=always",
+                "--decorations=always",
+                "--",
+                path,
+            ],
+            true,
+        ),
+        ("cat", vec!["--", path], false),
+    ];
+
+    let mut last_error = None;
+
+    for (program, args, uses_ansi) in preview_commands {
+        match Command::new(program)
+            .args(&args)
+            .current_dir(repo_root)
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                return Ok(FilePreview {
+                    content: String::from_utf8_lossy(&output.stdout).to_string(),
+                    uses_ansi,
+                });
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                last_error = Some(anyhow::anyhow!(
+                    "{} {} failed: {}",
+                    program,
+                    args.join(" "),
+                    stderr.trim()
+                ));
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => last_error = Some(err.into()),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No preview command available")))
 }
 
 /// Display diff (may be colored by delta/difftastic)
@@ -252,6 +307,8 @@ fn parse_range(s: &str) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     const SAMPLE_DIFF: &str = r#"diff --git a/src/main.rs b/src/main.rs
 index abc..def 100644
@@ -287,5 +344,31 @@ index abc..def 100644
         let fd = parse_diff("Binary files a/img.png and b/img.png differ\n");
         assert!(fd.is_binary);
         assert!(fd.hunks.is_empty());
+    }
+
+    #[test]
+    fn test_get_file_preview_reads_plain_file_contents() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-preview-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let file = dir.join("preview.txt");
+        fs::write(&file, "line 1\nline 2\n").unwrap();
+
+        let preview = get_file_preview("preview.txt", &dir).unwrap();
+        assert!(preview.content.contains("line 1"));
+        assert!(preview.content.contains("line 2"));
+        if preview.uses_ansi {
+            assert!(preview.content.contains("\u{1b}["));
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

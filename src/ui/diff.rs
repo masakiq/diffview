@@ -61,7 +61,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         (&app.raw_diff, true)
     } else {
         match app.tool {
-            DiffTool::Raw => (&app.display_diff, true),
+            DiffTool::Raw => (&app.display_diff, app.cached_display_text.is_none()),
             _ => (&app.display_diff, false),
         }
     };
