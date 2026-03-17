@@ -304,6 +304,16 @@ impl TreeSection {
         }
     }
 
+    pub fn move_cursor_to_first_file(&mut self) {
+        if let Some(position) = self
+            .visible
+            .iter()
+            .position(|&idx| self.all_nodes.get(idx).is_some_and(|node| !node.is_dir))
+        {
+            self.cursor = position;
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.visible.is_empty()
     }
@@ -546,6 +556,10 @@ impl App {
         // Auto-focus: if unstaged is empty but staged has items, start in staged
         if !app.is_commit_mode() && app.unstaged.is_empty() && !app.staged.is_empty() {
             app.focus = Focus::Staged;
+        }
+
+        if let Some(pane) = app.focused_pane() {
+            app.tree_mut(pane).move_cursor_to_first_file();
         }
 
         // Auto-load diff for the first file in the focused section
@@ -2365,6 +2379,34 @@ mod tests {
         assert_eq!(
             section.current_node().unwrap().path,
             Path::new("src/nested/file.txt")
+        );
+    }
+
+    #[test]
+    fn move_cursor_to_first_file_skips_directory_entries() {
+        let mut nodes = Vec::new();
+        build_section(
+            &mut nodes,
+            &[
+                ("src/nested/a.txt".to_string(), 'M', 'M'),
+                ("src/nested/b.txt".to_string(), 'M', 'M'),
+            ],
+        );
+
+        let mut section = TreeSection {
+            all_nodes: nodes,
+            visible: Vec::new(),
+            cursor: 0,
+        };
+        section.rebuild_visible();
+
+        assert!(section.current_node().unwrap().is_dir);
+
+        section.move_cursor_to_first_file();
+
+        assert_eq!(
+            section.current_node().unwrap().path,
+            Path::new("src/nested/a.txt")
         );
     }
 
