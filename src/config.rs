@@ -42,7 +42,7 @@ fn default_tool() -> String {
 }
 
 fn default_tree_width_percentage() -> u16 {
-    25
+    20
 }
 
 impl DiffConfig {
@@ -97,7 +97,7 @@ mod tests {
         let config = Config::default();
 
         assert_eq!(config.diff.tool, "raw");
-        assert_eq!(config.diff.tree_width_percentage(), 25);
+        assert_eq!(config.diff.tree_width_percentage(), 20);
         assert_eq!(config.diff.commit.key, "C");
         assert_eq!(config.diff.commit.command, vec!["git", "commit", "-v"]);
     }

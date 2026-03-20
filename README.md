@@ -161,7 +161,7 @@ Settings can be specified in `~/.config/diffview/config.toml`.
 tool = "raw"
 
 # Width of the left tree pane as a percentage.
-tree_width_percentage = 25
+tree_width_percentage = 20
 
 [diff.commit]
 # Key used in working-tree diff view.
