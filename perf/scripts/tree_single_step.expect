@@ -1,0 +1,52 @@
+#!/usr/bin/expect -f
+
+proc usage {} {
+    puts stderr {Usage: tree_single_step.expect ?options? [--] <command> [args...]}
+}
+
+set settle_ms 300
+set command_start -1
+
+for {set i 0} {$i < [llength $argv]} {incr i} {
+    set arg [lindex $argv $i]
+    if {$arg eq "--help"} {
+        usage
+        exit 0
+    } elseif {$arg eq "--"} {
+        set command_start [expr {$i + 1}]
+        break
+    } elseif {$arg eq "--settle-ms"} {
+        incr i
+        if {$i >= [llength $argv]} {
+            usage
+            exit 2
+        }
+        set settle_ms [lindex $argv $i]
+    } elseif {[string first "--" $arg] == 0} {
+        usage
+        exit 2
+    } else {
+        set command_start $i
+        break
+    }
+}
+
+if {$command_start < 0 || $command_start >= [llength $argv]} {
+    usage
+    exit 2
+}
+
+set timeout 10
+set cmd [lrange $argv $command_start end]
+
+spawn -noecho {*}$cmd
+expect {
+    -re {Unstaged|Staged|Files} {}
+    -re {\x1b\[\?1049h} { after 100 }
+    -re {\x1b\[\?25l} { after 100 }
+    timeout { exit 124 }
+}
+send "j"
+after $settle_ms
+send "q"
+expect eof

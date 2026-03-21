@@ -1,0 +1,28 @@
+#!/usr/bin/expect -f
+
+proc usage {} {
+    puts stderr {Usage: startup.expect <command> [args...]}
+}
+
+if {[llength $argv] == 0} {
+    usage
+    exit 2
+}
+
+if {[lindex $argv 0] eq "--help"} {
+    usage
+    exit 0
+}
+
+set timeout 10
+set cmd $argv
+
+spawn -noecho {*}$cmd
+expect {
+    -re {Unstaged|Staged|Files} {}
+    -re {\x1b\[\?1049h} { after 100 }
+    -re {\x1b\[\?25l} { after 100 }
+    timeout { exit 124 }
+}
+send "q"
+expect eof
