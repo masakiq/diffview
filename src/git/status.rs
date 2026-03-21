@@ -38,7 +38,10 @@ impl GitFile {
 }
 
 pub fn get_status(repo_root: &Path) -> Result<Vec<GitFile>> {
-    let output = super::run_git(&["status", "--porcelain"], repo_root)?;
+    let output = super::run_git(
+        &["status", "--porcelain", "--untracked-files=all"],
+        repo_root,
+    )?;
     Ok(parse_status(&output))
 }
 
@@ -146,6 +149,34 @@ mod tests {
         let input = "R  old.rs -> new.rs\n";
         let files = parse_status(input);
         assert_eq!(files[0].path, "new.rs");
+    }
+
+    #[test]
+    fn test_parse_porcelain_with_untracked_files_all() {
+        let input = "?? hoge/a.txt\n?? hoge/nested/b.txt\n";
+        let files = parse_status(input);
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "hoge/a.txt");
+        assert!(files[0].is_untracked());
+        assert_eq!(files[1].path, "hoge/nested/b.txt");
+        assert!(files[1].is_untracked());
+    }
+
+    #[test]
+    fn test_parse_porcelain_mixed_untracked_and_tracked_entries() {
+        let input = " M src/main.rs\n?? newdir/file1.txt\n?? newdir/sub/file2.txt\nA  staged.rs\n";
+        let files = parse_status(input);
+
+        assert_eq!(files.len(), 4);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert!(!files[0].is_untracked());
+        assert_eq!(files[1].path, "newdir/file1.txt");
+        assert!(files[1].is_untracked());
+        assert_eq!(files[2].path, "newdir/sub/file2.txt");
+        assert!(files[2].is_untracked());
+        assert_eq!(files[3].path, "staged.rs");
+        assert!(!files[3].is_untracked());
     }
 
     #[test]

@@ -11,7 +11,7 @@ use ratatui::{
     Terminal,
 };
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -2193,10 +2193,16 @@ fn build_section(target_nodes: &mut Vec<TreeNode>, files: &[(String, char, char)
         .map(|n| (n.path.clone(), n.expanded))
         .collect();
 
-    let mut map: BTreeMap<String, (bool, char, char)> = BTreeMap::new();
+    let mut file_children: BTreeMap<PathBuf, BTreeMap<PathBuf, (char, char)>> = BTreeMap::new();
+    let mut dir_children: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
 
     for (path, staged, unstaged) in files {
         let fp = PathBuf::from(path);
+        let parent = fp.parent().map(Path::to_path_buf).unwrap_or_default();
+        file_children
+            .entry(parent)
+            .or_default()
+            .insert(fp.clone(), (*staged, *unstaged));
 
         // Insert ancestor directories
         let mut ancestor = PathBuf::new();
@@ -2204,44 +2210,74 @@ fn build_section(target_nodes: &mut Vec<TreeNode>, files: &[(String, char, char)
         for (i, comp) in components.iter().enumerate() {
             ancestor = ancestor.join(comp);
             if i + 1 < components.len() {
-                let key = format!("{}/", ancestor.to_string_lossy());
-                map.entry(key).or_insert((true, ' ', ' '));
+                let parent = ancestor.parent().map(Path::to_path_buf).unwrap_or_default();
+                dir_children
+                    .entry(parent)
+                    .or_default()
+                    .insert(ancestor.clone());
+            }
+        }
+    }
+
+    fn push_nodes(
+        parent: &Path,
+        nodes: &mut Vec<TreeNode>,
+        prev_expanded: &HashMap<PathBuf, bool>,
+        file_children: &BTreeMap<PathBuf, BTreeMap<PathBuf, (char, char)>>,
+        dir_children: &BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    ) {
+        if let Some(files) = file_children.get(parent) {
+            for (path, (staged, unstaged)) in files {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                let depth = path.components().count().saturating_sub(1);
+
+                nodes.push(TreeNode {
+                    path: path.clone(),
+                    name,
+                    depth,
+                    is_dir: false,
+                    expanded: false,
+                    staged: *staged,
+                    unstaged: *unstaged,
+                });
             }
         }
 
-        map.insert(path.clone(), (false, *staged, *unstaged));
+        if let Some(dirs) = dir_children.get(parent) {
+            for path in dirs {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                let depth = path.components().count().saturating_sub(1);
+                let expanded = *prev_expanded.get(path).unwrap_or(&true);
+
+                nodes.push(TreeNode {
+                    path: path.clone(),
+                    name,
+                    depth,
+                    is_dir: true,
+                    expanded,
+                    staged: ' ',
+                    unstaged: ' ',
+                });
+
+                push_nodes(path, nodes, prev_expanded, file_children, dir_children);
+            }
+        }
     }
 
     let mut nodes: Vec<TreeNode> = Vec::new();
-    for (key, (is_dir, staged, unstaged)) in &map {
-        let path = if *is_dir {
-            PathBuf::from(key.trim_end_matches('/'))
-        } else {
-            PathBuf::from(key)
-        };
-
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| key.clone());
-
-        let depth = path.components().count().saturating_sub(1);
-        let expanded = if *is_dir {
-            *prev_expanded.get(&path).unwrap_or(&true)
-        } else {
-            false
-        };
-
-        nodes.push(TreeNode {
-            path,
-            name,
-            depth,
-            is_dir: *is_dir,
-            expanded,
-            staged: *staged,
-            unstaged: *unstaged,
-        });
-    }
+    push_nodes(
+        Path::new(""),
+        &mut nodes,
+        &prev_expanded,
+        &file_children,
+        &dir_children,
+    );
 
     *target_nodes = nodes;
 }
@@ -2407,6 +2443,60 @@ mod tests {
         assert_eq!(
             section.current_node().unwrap().path,
             Path::new("src/nested/a.txt")
+        );
+    }
+
+    #[test]
+    fn build_section_creates_directory_nodes_for_untracked_files() {
+        let mut nodes = Vec::new();
+        build_section(
+            &mut nodes,
+            &[
+                ("hoge/a.txt".to_string(), '?', '?'),
+                ("hoge/nested/b.txt".to_string(), '?', '?'),
+            ],
+        );
+
+        assert!(nodes
+            .iter()
+            .any(|node| node.is_dir && node.path == Path::new("hoge")));
+        assert!(nodes
+            .iter()
+            .any(|node| node.is_dir && node.path == Path::new("hoge/nested")));
+        assert!(nodes.iter().any(|node| !node.is_dir
+            && node.path == Path::new("hoge/a.txt")
+            && node.is_untracked()));
+        assert!(nodes.iter().any(|node| {
+            !node.is_dir && node.path == Path::new("hoge/nested/b.txt") && node.is_untracked()
+        }));
+    }
+
+    #[test]
+    fn build_section_lists_direct_files_before_expanded_subdirectories() {
+        let mut nodes = Vec::new();
+        build_section(
+            &mut nodes,
+            &[
+                ("aaa/bbb/ppp.txt".to_string(), '?', '?'),
+                ("aaa/bbb.txt".to_string(), '?', '?'),
+                ("aaa/ccc.txt".to_string(), '?', '?'),
+            ],
+        );
+
+        let ordered_paths: Vec<_> = nodes
+            .iter()
+            .map(|node| node.path.to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(
+            ordered_paths,
+            vec![
+                "aaa".to_string(),
+                "aaa/bbb.txt".to_string(),
+                "aaa/ccc.txt".to_string(),
+                "aaa/bbb".to_string(),
+                "aaa/bbb/ppp.txt".to_string(),
+            ]
         );
     }
 
@@ -2638,5 +2728,24 @@ mod tests {
         let matches = app.collect_search_matches(SearchScope::DiffView, "println!");
 
         assert_eq!(matches, vec![0]);
+    }
+
+    #[test]
+    fn files_under_dir_collects_nested_untracked_files() {
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[
+                ("hoge/a.txt".to_string(), '?', '?'),
+                ("hoge/nested/b.txt".to_string(), '?', '?'),
+            ],
+        );
+
+        let files = app.unstaged.files_under_dir(Path::new("hoge"));
+
+        assert_eq!(
+            files,
+            vec!["hoge/a.txt".to_string(), "hoge/nested/b.txt".to_string()]
+        );
     }
 }
