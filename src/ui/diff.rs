@@ -25,18 +25,30 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let title = match &app.current_file {
         Some(path) => {
-            if app.file_diff.is_binary {
+            if app.diff_view_mode == crate::app::DiffViewMode::FullFile {
+                let mode_label = app
+                    .content_annotation
+                    .map(|annotation| annotation.title_label())
+                    .unwrap_or_else(|| app.diff_view_mode.label());
+                format!(" {} [{}] [{}] ", path, origin_label, mode_label)
+            } else if app.file_diff.is_binary {
                 format!(" {} [{}][binary] ", path, origin_label)
             } else if !app.file_diff.hunks.is_empty() {
                 format!(
-                    " {} [{}] (hunk {}/{}) ",
+                    " {} [{}] [{}] (hunk {}/{}) ",
                     path,
                     origin_label,
+                    app.diff_view_mode.label(),
                     app.hunk_cursor + 1,
                     app.file_diff.hunks.len()
                 )
             } else {
-                format!(" {} [{}] ", path, origin_label)
+                format!(
+                    " {} [{}] [{}] ",
+                    path,
+                    origin_label,
+                    app.diff_view_mode.label()
+                )
             }
         }
         None => " Diff ".to_string(),

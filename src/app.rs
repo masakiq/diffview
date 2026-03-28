@@ -90,6 +90,45 @@ impl DiffTool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiffViewMode {
+    Patch,
+    FullFile,
+}
+
+impl DiffViewMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffViewMode::Patch => "patch",
+            DiffViewMode::FullFile => "file",
+        }
+    }
+
+    fn toggle(self) -> Self {
+        match self {
+            DiffViewMode::Patch => DiffViewMode::FullFile,
+            DiffViewMode::FullFile => DiffViewMode::Patch,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentAnnotation {
+    BeforeDelete,
+    BinaryUnavailable,
+    UnmergedUnavailable,
+}
+
+impl ContentAnnotation {
+    pub fn title_label(self) -> &'static str {
+        match self {
+            ContentAnnotation::BeforeDelete => "file:before-delete",
+            ContentAnnotation::BinaryUnavailable => "binary",
+            ContentAnnotation::UnmergedUnavailable => "unmerged",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchScope {
     WorkingTree,
@@ -196,7 +235,10 @@ impl TreeNode {
     }
 
     pub fn is_unmerged(&self) -> bool {
-        self.staged == 'U' || self.unstaged == 'U'
+        matches!(
+            (self.staged, self.unstaged),
+            ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')
+        )
     }
 
     pub fn status_for(&self, pane: TreePane) -> char {
@@ -404,6 +446,13 @@ pub struct DisplayLineInfo {
     pub is_selectable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileSelectionState {
+    status: char,
+    is_unmerged: bool,
+    is_untracked: bool,
+}
+
 #[derive(Debug, Clone)]
 struct PendingTreePreview {
     pane: TreePane,
@@ -422,6 +471,7 @@ struct DiffCacheKey {
     tool: DiffTool,
     pane_width: u16,
     commit_revision: Option<String>,
+    view_mode: DiffViewMode,
 }
 
 #[derive(Clone)]
@@ -433,6 +483,18 @@ struct CachedDiff {
     display_line_count: usize,
     raw_line_count: usize,
     cached_display_text: Option<Text<'static>>,
+    content_annotation: Option<ContentAnnotation>,
+}
+
+struct LoadedContent {
+    raw: String,
+    display: String,
+    file_diff: FileDiff,
+    line_infos: Vec<DisplayLineInfo>,
+    display_line_count: usize,
+    raw_line_count: usize,
+    cached_display_text: Option<Text<'static>>,
+    content_annotation: Option<ContentAnnotation>,
 }
 
 const DIFF_CACHE_CAPACITY: usize = 64;
@@ -460,6 +522,7 @@ pub struct App {
 
     // Diff state
     pub diff_origin: Option<TreePane>,
+    pub diff_view_mode: DiffViewMode,
     pub display_diff: String,
     pub raw_diff: String,
     pub file_diff: FileDiff,
@@ -471,6 +534,7 @@ pub struct App {
     pub display_line_count: usize,
     pub raw_line_count: usize,
     pub cached_display_text: Option<Text<'static>>,
+    pub content_annotation: Option<ContentAnnotation>,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
     pending_tree_preview: Option<PendingTreePreview>,
@@ -524,6 +588,7 @@ impl App {
             unstaged: TreeSection::new(),
             staged: TreeSection::new(),
             diff_origin: None,
+            diff_view_mode: DiffViewMode::Patch,
             display_diff: String::new(),
             raw_diff: String::new(),
             file_diff: FileDiff::default(),
@@ -535,6 +600,7 @@ impl App {
             display_line_count: 0,
             raw_line_count: 0,
             cached_display_text: None,
+            content_annotation: None,
             diff_pane_height: 20,
             diff_pane_width: 0,
             pending_tree_preview: None,
@@ -578,7 +644,7 @@ impl App {
         if let Some(node) = section.current_node() {
             if !node.is_dir {
                 let path = node.path.to_string_lossy().to_string();
-                let _ = self.load_diff(&path, pane);
+                let _ = self.load_diff(&path, pane, DiffViewMode::Patch);
             }
         }
     }
@@ -667,16 +733,27 @@ impl App {
     }
 
     pub fn diff_help_text(&self) -> String {
-        let mut ops = format!(
-            "[j/k]scroll [Ctrl-U/D]jump [h]back [c]copy [/]search [n/N]match [[]/[]]hunk [r]refresh [q]quit"
-        );
+        let mut ops =
+            "[j/k]scroll [Ctrl-U/D]jump [h]back [c]copy [/]search [n/N]match [r]refresh [q]quit"
+                .to_string();
+
+        if self.diff_view_mode == DiffViewMode::Patch {
+            ops.push_str(" [[]/[]]hunk");
+        }
 
         if !self.is_commit_mode() {
             ops.push_str(&format!(" [{}]commit", self.commit_key_label()));
         }
-        if !self.is_commit_mode() && self.tool.supports_line_ops() {
+        if self.diff_view_mode == DiffViewMode::Patch
+            && !self.is_commit_mode()
+            && self.tool.supports_line_ops()
+        {
             ops.push_str(" [v]select");
         }
+        ops.push_str(match self.diff_view_mode {
+            DiffViewMode::Patch => " [f]file",
+            DiffViewMode::FullFile => " [f]diff",
+        });
 
         ops
     }
@@ -809,13 +886,19 @@ impl App {
 
     // ─── Diff loading ────────────────────────────────────────────────────
 
-    fn build_diff_cache_key(&self, path: &str, pane: TreePane) -> DiffCacheKey {
+    fn build_diff_cache_key(
+        &self,
+        path: &str,
+        pane: TreePane,
+        view_mode: DiffViewMode,
+    ) -> DiffCacheKey {
         DiffCacheKey {
             path: path.to_string(),
             pane,
             tool: self.tool.clone(),
             pane_width: self.diff_pane_width,
             commit_revision: self.commit_revision.clone(),
+            view_mode,
         }
     }
 
@@ -901,6 +984,7 @@ impl App {
         &mut self,
         path: &str,
         pane: TreePane,
+        view_mode: DiffViewMode,
         raw_diff: String,
         display_diff: String,
         file_diff: FileDiff,
@@ -908,6 +992,7 @@ impl App {
         display_line_count: usize,
         raw_line_count: usize,
         cached_display_text: Option<Text<'static>>,
+        content_annotation: Option<ContentAnnotation>,
     ) {
         self.raw_diff = raw_diff;
         self.display_diff = display_diff;
@@ -916,6 +1001,8 @@ impl App {
         self.display_line_count = display_line_count;
         self.raw_line_count = raw_line_count;
         self.cached_display_text = cached_display_text;
+        self.diff_view_mode = view_mode;
+        self.content_annotation = content_annotation;
         self.current_file = Some(path.to_string());
         self.diff_origin = Some(pane);
         self.diff_scroll = 0;
@@ -923,132 +1010,13 @@ impl App {
         self.hunk_cursor = 0;
     }
 
-    pub fn load_diff(&mut self, path: &str, pane: TreePane) -> Result<()> {
-        let cache_key = self.build_diff_cache_key(path, pane);
-        if let Some(cached) = self.get_cached_diff(&cache_key) {
-            self.apply_loaded_diff_state(
-                path,
-                pane,
-                cached.raw_diff,
-                cached.display_diff,
-                cached.file_diff,
-                cached.line_infos,
-                cached.display_line_count,
-                cached.raw_line_count,
-                cached.cached_display_text,
-            );
-            return Ok(());
-        }
-
-        let is_untracked = self.has_untracked_file_in_pane(pane, path);
-        let mut force_ansi_rendering = false;
-        let (raw, display) =
-            if is_untracked {
-                let preview = crate::git::diff::get_file_preview(path, &self.repo_root)
-                    .unwrap_or_else(|_| crate::git::diff::FilePreview {
-                        content: String::new(),
-                        uses_ansi: false,
-                    });
-                force_ansi_rendering = preview.uses_ansi;
-                (preview.content.clone(), preview.content)
-            } else if let Some(rev) = self.commit_revision.as_deref() {
-                let raw = crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
-                    .unwrap_or_default();
-                let display = if self.tool == DiffTool::Raw {
-                    raw.clone()
-                } else {
-                    crate::git::diff::get_display_commit_diff(
-                        rev,
-                        path,
-                        self.tool.name(),
-                        self.diff_pane_width,
-                        &self.repo_root,
-                    )
-                    .unwrap_or_else(|_| raw.clone())
-                };
-                (raw, display)
-            } else {
-                let raw = crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
-                    .unwrap_or_default();
-                let display = if self.tool == DiffTool::Raw {
-                    raw.clone()
-                } else {
-                    crate::git::diff::get_display_diff(
-                        path,
-                        pane.is_staged(),
-                        self.tool.name(),
-                        self.diff_pane_width,
-                        &self.repo_root,
-                    )
-                    .unwrap_or_else(|_| raw.clone())
-                };
-                (raw, display)
-            };
-
-        let file_diff = if is_untracked {
-            FileDiff::default()
-        } else {
-            parse_diff(&raw)
-        };
-        let raw_line_count = raw.lines().count();
-        let display_line_count = display.lines().count();
-        let cached_display_text = self.build_cached_display_text(&display, force_ansi_rendering);
-
-        self.apply_loaded_diff_state(
-            path,
-            pane,
-            raw.clone(),
-            display.clone(),
-            file_diff.clone(),
-            Vec::new(),
-            display_line_count,
-            raw_line_count,
-            cached_display_text.clone(),
-        );
-        if is_untracked {
-            self.build_preview_line_infos();
-        } else {
-            self.build_line_infos();
-        }
-
-        self.insert_cached_diff(
-            cache_key,
-            CachedDiff {
-                raw_diff: raw,
-                display_diff: display,
-                file_diff,
-                line_infos: self.line_infos.clone(),
-                display_line_count: self.display_line_count,
-                raw_line_count: self.raw_line_count,
-                cached_display_text,
-            },
-        );
-
-        Ok(())
-    }
-
-    fn clear_diff(&mut self) {
-        self.display_diff.clear();
-        self.raw_diff.clear();
-        self.file_diff = FileDiff::default();
-        self.current_file = None;
-        self.diff_origin = None;
-        self.diff_scroll = 0;
-        self.diff_cursor = 0;
-        self.hunk_cursor = 0;
-        self.line_infos.clear();
-        self.raw_line_count = 0;
-        self.display_line_count = 0;
-        self.cached_display_text = None;
-    }
-
-    fn build_line_infos(&mut self) {
+    fn build_patch_line_infos(raw: &str) -> Vec<DisplayLineInfo> {
         let mut infos: Vec<DisplayLineInfo> = Vec::new();
         let mut hunk_idx: Option<usize> = None;
         let mut line_in_hunk: usize = 0;
         let mut current_hunk_counter = 0usize;
 
-        for line in self.raw_diff.lines() {
+        for line in raw.lines() {
             if line.starts_with("@@") {
                 hunk_idx = Some(current_hunk_counter);
                 current_hunk_counter += 1;
@@ -1075,19 +1043,359 @@ impl App {
             }
         }
 
-        self.line_infos = infos;
+        infos
     }
 
-    fn build_preview_line_infos(&mut self) {
-        self.line_infos = self
-            .raw_diff
-            .lines()
+    fn build_preview_line_infos_for(raw: &str) -> Vec<DisplayLineInfo> {
+        raw.lines()
             .map(|_| DisplayLineInfo {
                 hunk_idx: None,
                 line_in_hunk: None,
                 is_selectable: false,
             })
-            .collect();
+            .collect()
+    }
+
+    fn build_loaded_content(
+        &self,
+        raw: String,
+        display: String,
+        file_diff: FileDiff,
+        is_non_patch: bool,
+        force_ansi_rendering: bool,
+        content_annotation: Option<ContentAnnotation>,
+    ) -> LoadedContent {
+        let line_infos = if is_non_patch {
+            Self::build_preview_line_infos_for(&raw)
+        } else {
+            Self::build_patch_line_infos(&raw)
+        };
+
+        LoadedContent {
+            raw_line_count: raw.lines().count(),
+            display_line_count: display.lines().count(),
+            cached_display_text: self.build_cached_display_text(&display, force_ansi_rendering),
+            raw,
+            display,
+            file_diff,
+            line_infos,
+            content_annotation,
+        }
+    }
+
+    fn file_selection_state(&self, path: &str, pane: TreePane) -> Option<FileSelectionState> {
+        self.tree(pane)
+            .all_nodes
+            .iter()
+            .find(|node| !node.is_dir && node.path == Path::new(path))
+            .map(|node| FileSelectionState {
+                status: node.status_for(pane),
+                is_unmerged: !self.is_commit_mode() && node.is_unmerged(),
+                is_untracked: node.is_untracked(),
+            })
+    }
+
+    fn full_file_unavailable_content(
+        &self,
+        message: &str,
+        content_annotation: Option<ContentAnnotation>,
+    ) -> LoadedContent {
+        self.build_loaded_content(
+            message.to_string(),
+            message.to_string(),
+            FileDiff::default(),
+            true,
+            false,
+            content_annotation,
+        )
+    }
+
+    fn plain_full_file_content(
+        &self,
+        raw: String,
+        content_annotation: Option<ContentAnnotation>,
+    ) -> LoadedContent {
+        self.build_loaded_content(
+            raw.clone(),
+            raw,
+            FileDiff::default(),
+            true,
+            false,
+            content_annotation,
+        )
+    }
+
+    fn rich_full_file_content(
+        &self,
+        path: &str,
+        raw: String,
+        content_annotation: Option<ContentAnnotation>,
+    ) -> LoadedContent {
+        match crate::git::diff::render_content_preview(path, &raw, &self.repo_root) {
+            Ok(preview) => self.build_loaded_content(
+                preview.content.clone(),
+                preview.content,
+                FileDiff::default(),
+                true,
+                preview.uses_ansi,
+                content_annotation,
+            ),
+            Err(_) => self.plain_full_file_content(raw, content_annotation),
+        }
+    }
+
+    fn patch_file_diff_for(&mut self, path: &str, pane: TreePane) -> FileDiff {
+        let patch_key = self.build_diff_cache_key(path, pane, DiffViewMode::Patch);
+        if let Some(cached) = self.get_cached_diff(&patch_key) {
+            return cached.file_diff;
+        }
+
+        let raw = if let Some(rev) = self.commit_revision.as_deref() {
+            crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root).unwrap_or_default()
+        } else {
+            crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
+                .unwrap_or_default()
+        };
+
+        parse_diff(&raw)
+    }
+
+    fn full_file_is_binary(
+        &mut self,
+        path: &str,
+        pane: TreePane,
+        file_state: FileSelectionState,
+    ) -> bool {
+        if file_state.is_untracked {
+            return crate::git::diff::is_binary_untracked_file(path, &self.repo_root)
+                .unwrap_or(false);
+        }
+
+        self.patch_file_diff_for(path, pane).is_binary
+    }
+
+    fn load_full_file_content(&mut self, path: &str, pane: TreePane) -> LoadedContent {
+        let Some(file_state) = self.file_selection_state(path, pane) else {
+            return self.full_file_unavailable_content(
+                "Full file view unavailable: file metadata not found",
+                None,
+            );
+        };
+
+        if file_state.is_unmerged {
+            return self.full_file_unavailable_content(
+                "Full file view unavailable for unmerged files",
+                Some(ContentAnnotation::UnmergedUnavailable),
+            );
+        }
+
+        if self.full_file_is_binary(path, pane, file_state) {
+            return self.full_file_unavailable_content(
+                "Full file view unavailable for binary files",
+                Some(ContentAnnotation::BinaryUnavailable),
+            );
+        }
+
+        if let Some(rev) = self.commit_revision.as_deref() {
+            let rev_spec = if file_state.status == 'D' {
+                format!("{}^:{}", rev, path)
+            } else {
+                format!("{}:{}", rev, path)
+            };
+
+            return match crate::git::diff::get_file_content_at_rev(&rev_spec, &self.repo_root) {
+                Ok(raw) => self.rich_full_file_content(
+                    path,
+                    raw,
+                    (file_state.status == 'D').then_some(ContentAnnotation::BeforeDelete),
+                ),
+                Err(_) => self.full_file_unavailable_content(
+                    "Full file view unavailable: file does not exist in this revision",
+                    None,
+                ),
+            };
+        }
+
+        match pane {
+            TreePane::Unstaged if file_state.status == 'D' => {
+                match crate::git::diff::get_file_content_at_rev(
+                    &format!(":{}", path),
+                    &self.repo_root,
+                ) {
+                    Ok(raw) => self.rich_full_file_content(
+                        path,
+                        raw,
+                        Some(ContentAnnotation::BeforeDelete),
+                    ),
+                    Err(_) => self.full_file_unavailable_content("File content unavailable", None),
+                }
+            }
+            TreePane::Staged if file_state.status == 'D' => {
+                match crate::git::diff::get_file_content_at_rev(
+                    &format!("HEAD:{}", path),
+                    &self.repo_root,
+                ) {
+                    Ok(raw) => self.rich_full_file_content(
+                        path,
+                        raw,
+                        Some(ContentAnnotation::BeforeDelete),
+                    ),
+                    Err(_) => self.full_file_unavailable_content("File content unavailable", None),
+                }
+            }
+            TreePane::Staged => {
+                match crate::git::diff::get_file_content_at_rev(
+                    &format!(":{}", path),
+                    &self.repo_root,
+                ) {
+                    Ok(raw) => self.rich_full_file_content(path, raw, None),
+                    Err(_) => self.full_file_unavailable_content("File content unavailable", None),
+                }
+            }
+            TreePane::Unstaged => match crate::git::diff::get_file_preview(path, &self.repo_root) {
+                Ok(preview) => self.build_loaded_content(
+                    preview.content.clone(),
+                    preview.content,
+                    FileDiff::default(),
+                    true,
+                    preview.uses_ansi,
+                    None,
+                ),
+                Err(_) => self.full_file_unavailable_content("File content unavailable", None),
+            },
+        }
+    }
+
+    pub fn load_diff(&mut self, path: &str, pane: TreePane, view_mode: DiffViewMode) -> Result<()> {
+        let cache_key = self.build_diff_cache_key(path, pane, view_mode);
+        if let Some(cached) = self.get_cached_diff(&cache_key) {
+            self.apply_loaded_diff_state(
+                path,
+                pane,
+                view_mode,
+                cached.raw_diff,
+                cached.display_diff,
+                cached.file_diff,
+                cached.line_infos,
+                cached.display_line_count,
+                cached.raw_line_count,
+                cached.cached_display_text,
+                cached.content_annotation,
+            );
+            return Ok(());
+        }
+
+        let loaded = match view_mode {
+            DiffViewMode::Patch => {
+                let is_untracked = self.has_untracked_file_in_pane(pane, path);
+                let mut force_ansi_rendering = false;
+                let (raw, display) = if is_untracked {
+                    let preview = crate::git::diff::get_file_preview(path, &self.repo_root)
+                        .unwrap_or_else(|_| crate::git::diff::FilePreview {
+                            content: String::new(),
+                            uses_ansi: false,
+                        });
+                    force_ansi_rendering = preview.uses_ansi;
+                    (preview.content.clone(), preview.content)
+                } else if let Some(rev) = self.commit_revision.as_deref() {
+                    let raw = crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
+                        .unwrap_or_default();
+                    let display = if self.tool == DiffTool::Raw {
+                        raw.clone()
+                    } else {
+                        crate::git::diff::get_display_commit_diff(
+                            rev,
+                            path,
+                            self.tool.name(),
+                            self.diff_pane_width,
+                            &self.repo_root,
+                        )
+                        .unwrap_or_else(|_| raw.clone())
+                    };
+                    (raw, display)
+                } else {
+                    let raw =
+                        crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
+                            .unwrap_or_default();
+                    let display = if self.tool == DiffTool::Raw {
+                        raw.clone()
+                    } else {
+                        crate::git::diff::get_display_diff(
+                            path,
+                            pane.is_staged(),
+                            self.tool.name(),
+                            self.diff_pane_width,
+                            &self.repo_root,
+                        )
+                        .unwrap_or_else(|_| raw.clone())
+                    };
+                    (raw, display)
+                };
+
+                let file_diff = if is_untracked {
+                    FileDiff::default()
+                } else {
+                    parse_diff(&raw)
+                };
+
+                self.build_loaded_content(
+                    raw,
+                    display,
+                    file_diff,
+                    is_untracked,
+                    force_ansi_rendering,
+                    None,
+                )
+            }
+            DiffViewMode::FullFile => self.load_full_file_content(path, pane),
+        };
+
+        self.apply_loaded_diff_state(
+            path,
+            pane,
+            view_mode,
+            loaded.raw.clone(),
+            loaded.display.clone(),
+            loaded.file_diff.clone(),
+            loaded.line_infos.clone(),
+            loaded.display_line_count,
+            loaded.raw_line_count,
+            loaded.cached_display_text.clone(),
+            loaded.content_annotation,
+        );
+
+        self.insert_cached_diff(
+            cache_key,
+            CachedDiff {
+                raw_diff: loaded.raw,
+                display_diff: loaded.display,
+                file_diff: loaded.file_diff,
+                line_infos: loaded.line_infos,
+                display_line_count: loaded.display_line_count,
+                raw_line_count: loaded.raw_line_count,
+                cached_display_text: loaded.cached_display_text,
+                content_annotation: loaded.content_annotation,
+            },
+        );
+
+        Ok(())
+    }
+
+    fn clear_diff(&mut self) {
+        self.diff_view_mode = DiffViewMode::Patch;
+        self.display_diff.clear();
+        self.raw_diff.clear();
+        self.file_diff = FileDiff::default();
+        self.current_file = None;
+        self.diff_origin = None;
+        self.diff_scroll = 0;
+        self.diff_cursor = 0;
+        self.hunk_cursor = 0;
+        self.line_infos.clear();
+        self.raw_line_count = 0;
+        self.display_line_count = 0;
+        self.cached_display_text = None;
+        self.content_annotation = None;
     }
 
     /// Reload diff for the current file with the current origin
@@ -1095,10 +1403,19 @@ impl App {
         if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
             let prev_scroll = self.diff_scroll;
             let prev_cursor = self.diff_cursor;
-            self.load_diff(&path, pane)?;
-            let line_count = self.raw_line_count;
-            self.diff_scroll = prev_scroll.min(line_count.saturating_sub(1));
-            self.diff_cursor = prev_cursor.min(line_count.saturating_sub(1));
+            let view_mode = if self.focus == Focus::InlineSelect {
+                DiffViewMode::Patch
+            } else {
+                self.diff_view_mode
+            };
+            self.load_diff(&path, pane, view_mode)?;
+            let scroll_line_count = if self.focus == Focus::InlineSelect {
+                self.raw_line_count
+            } else {
+                self.display_line_count
+            };
+            self.diff_scroll = prev_scroll.min(scroll_line_count.saturating_sub(1));
+            self.diff_cursor = prev_cursor.min(self.raw_line_count.saturating_sub(1));
         }
         Ok(())
     }
@@ -1717,7 +2034,7 @@ impl App {
             self.tree_mut(pane).expand_and_enter();
             self.tree_load_preview();
         } else {
-            self.load_diff(&path, pane)?;
+            self.load_diff(&path, pane, DiffViewMode::Patch)?;
             self.focus = Focus::DiffView;
         }
         Ok(())
@@ -1854,7 +2171,7 @@ impl App {
             return;
         }
 
-        let _ = self.load_diff(&path, pane);
+        let _ = self.load_diff(&path, pane, DiffViewMode::Patch);
     }
 
     fn refresh_after_tree_op(&mut self) -> Result<()> {
@@ -1878,11 +2195,45 @@ impl App {
         Ok(())
     }
 
+    fn toggle_diff_view_mode(&mut self) -> Result<()> {
+        let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) else {
+            return Ok(());
+        };
+
+        let next_mode = self.diff_view_mode.toggle();
+        self.load_diff(&path, pane, next_mode)?;
+        self.status_message = Some(match next_mode {
+            DiffViewMode::Patch => "Patch view".to_string(),
+            DiffViewMode::FullFile => "Full file view".to_string(),
+        });
+        Ok(())
+    }
+
+    fn leave_diff_view_to_tree(&mut self) -> Result<()> {
+        let target_focus = self
+            .diff_origin
+            .map(|p| p.to_focus())
+            .unwrap_or(Focus::Unstaged);
+
+        if self.diff_view_mode == DiffViewMode::FullFile {
+            if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
+                self.load_diff(&path, pane, DiffViewMode::Patch)?;
+            } else {
+                self.diff_view_mode = DiffViewMode::Patch;
+                self.content_annotation = None;
+            }
+        }
+
+        self.focus = target_focus;
+        Ok(())
+    }
+
     // ─── Diff view key handling ─────────────────────────────────────────
 
     fn handle_diff_key(&mut self, key: KeyEvent) -> Result<()> {
         let line_count = self.display_line_count;
         let half_page = (self.diff_pane_height / 2).max(1);
+        let is_full_file_view = self.diff_view_mode == DiffViewMode::FullFile;
 
         if self.can_trigger_commit_action(key) {
             self.pending_action = Some(ExternalAction::Commit);
@@ -1920,19 +2271,22 @@ impl App {
             }
             KeyCode::Char('n') => self.navigate_search(true),
             KeyCode::Char('N') => self.navigate_search(false),
-            KeyCode::Char(']') => self.jump_next_hunk(),
-            KeyCode::Char('[') => self.jump_prev_hunk(),
+            KeyCode::Char(']') if !is_full_file_view => self.jump_next_hunk(),
+            KeyCode::Char('[') if !is_full_file_view => self.jump_prev_hunk(),
             KeyCode::Char('c') => {
                 self.diff_copy_path_to_clipboard();
             }
+            KeyCode::Char('f') => {
+                self.toggle_diff_view_mode()?;
+            }
             KeyCode::Char('h') | KeyCode::Left => {
-                self.focus = self
-                    .diff_origin
-                    .map(|p| p.to_focus())
-                    .unwrap_or(Focus::Unstaged);
+                self.leave_diff_view_to_tree()?;
             }
             KeyCode::Char('v') => {
-                if self.is_commit_mode() {
+                if is_full_file_view {
+                    self.error_message =
+                        Some("Line selection unavailable in full file view".to_string());
+                } else if self.is_commit_mode() {
                     self.error_message = Some("Commit diff is read-only".to_string());
                 } else if self.tool.supports_line_ops() {
                     if self.file_diff.hunks.is_empty() {
@@ -2500,6 +2854,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tree_node_is_unmerged_covers_aa_and_dd_conflicts() {
+        let both_added = TreeNode {
+            path: PathBuf::from("aa.txt"),
+            name: "aa.txt".to_string(),
+            depth: 0,
+            is_dir: false,
+            expanded: false,
+            staged: 'A',
+            unstaged: 'A',
+        };
+        let both_deleted = TreeNode {
+            path: PathBuf::from("dd.txt"),
+            name: "dd.txt".to_string(),
+            depth: 0,
+            is_dir: false,
+            expanded: false,
+            staged: 'D',
+            unstaged: 'D',
+        };
+        let modified = TreeNode {
+            path: PathBuf::from("m.txt"),
+            name: "m.txt".to_string(),
+            depth: 0,
+            is_dir: false,
+            expanded: false,
+            staged: 'M',
+            unstaged: ' ',
+        };
+
+        assert!(both_added.is_unmerged());
+        assert!(both_deleted.is_unmerged());
+        assert!(!modified.is_unmerged());
+    }
+
+    #[test]
+    fn commit_mode_added_file_is_not_treated_as_unmerged_in_full_file_logic() {
+        let mut app = make_test_app();
+        app.commit_revision = Some("deadbeef".to_string());
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("added.txt".to_string(), 'A', 'A')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+
+        let file_state = app
+            .file_selection_state("added.txt", TreePane::Unstaged)
+            .expect("commit-mode file state should exist");
+
+        assert_eq!(file_state.status, 'A');
+        assert!(!file_state.is_unmerged);
+    }
+
     fn make_test_app() -> App {
         App {
             should_quit: false,
@@ -2515,6 +2922,7 @@ mod tests {
             unstaged: TreeSection::new(),
             staged: TreeSection::new(),
             diff_origin: None,
+            diff_view_mode: DiffViewMode::Patch,
             display_diff: String::new(),
             raw_diff: String::new(),
             file_diff: FileDiff::default(),
@@ -2526,6 +2934,7 @@ mod tests {
             display_line_count: 0,
             raw_line_count: 0,
             cached_display_text: None,
+            content_annotation: None,
             diff_pane_height: 20,
             diff_pane_width: 80,
             pending_tree_preview: None,
@@ -2710,9 +3119,9 @@ mod tests {
     #[test]
     fn preview_line_infos_do_not_treat_diff_like_text_as_selectable() {
         let mut app = make_test_app();
-        app.raw_diff = "@@ -1 +1 @@\n-looks like diff\n+but is file content\n".to_string();
-
-        app.build_preview_line_infos();
+        app.line_infos = App::build_preview_line_infos_for(
+            "@@ -1 +1 @@\n-looks like diff\n+but is file content\n",
+        );
 
         assert_eq!(app.line_infos.len(), 3);
         assert!(app.line_infos.iter().all(|info| !info.is_selectable));
@@ -2747,5 +3156,15 @@ mod tests {
             files,
             vec!["hoge/a.txt".to_string(), "hoge/nested/b.txt".to_string()]
         );
+    }
+
+    #[test]
+    fn diff_help_text_switches_toggle_label_in_full_file_view() {
+        let mut app = make_test_app();
+
+        assert!(app.diff_help_text().contains("[f]file"));
+        app.diff_view_mode = DiffViewMode::FullFile;
+        assert!(app.diff_help_text().contains("[f]diff"));
+        assert!(!app.diff_help_text().contains("[v]select"));
     }
 }

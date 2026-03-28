@@ -1,7 +1,9 @@
 use anyhow::Result;
+use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub enum DiffLine {
@@ -35,6 +37,83 @@ pub struct FilePreview {
     pub uses_ansi: bool,
 }
 
+struct TempPreviewFile {
+    path: PathBuf,
+}
+
+impl TempPreviewFile {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempPreviewFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn run_preview_commands(
+    target_path: &Path,
+    display_name: Option<&str>,
+    repo_root: &Path,
+) -> Result<FilePreview> {
+    let mut last_error = None;
+
+    for program in ["bat", "cat"] {
+        let mut command = Command::new(program);
+        let uses_ansi = program == "bat";
+
+        if uses_ansi {
+            command.args(["--paging=never", "--color=always", "--decorations=always"]);
+            if let Some(display_name) = display_name {
+                command.args(["--file-name", display_name]);
+            }
+        }
+
+        command.arg("--").arg(target_path).current_dir(repo_root);
+
+        match command.output() {
+            Ok(output) if output.status.success() => {
+                return Ok(FilePreview {
+                    content: String::from_utf8_lossy(&output.stdout).to_string(),
+                    uses_ansi,
+                });
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                last_error = Some(anyhow::anyhow!(
+                    "{} preview failed: {}",
+                    program,
+                    stderr.trim()
+                ));
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => last_error = Some(err.into()),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No preview command available")))
+}
+
+fn create_temp_preview_file(path: &str, content: &str) -> Result<TempPreviewFile> {
+    let file_name = Path::new(path)
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| std::ffi::OsStr::new("preview.txt"));
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let temp_path = std::env::temp_dir().join(format!(
+        "diffview-preview-{}-{}-{}",
+        std::process::id(),
+        unique,
+        file_name.to_string_lossy()
+    ));
+
+    fs::write(&temp_path, content)?;
+
+    Ok(TempPreviewFile { path: temp_path })
+}
+
 /// Raw git diff output (used for operations).
 /// staged=true  → `git diff --cached -- <path>` (index vs HEAD)
 /// staged=false → `git diff -- <path>` (working tree vs index)
@@ -57,50 +136,39 @@ pub fn get_raw_commit_diff(revision: &str, path: &str, repo_root: &Path) -> Resu
 
 /// File preview for content that `git diff` cannot render, such as untracked files.
 pub fn get_file_preview(path: &str, repo_root: &Path) -> Result<FilePreview> {
-    let preview_commands = [
-        (
-            "bat",
-            vec![
-                "--paging=never",
-                "--color=always",
-                "--decorations=always",
-                "--",
-                path,
-            ],
-            true,
-        ),
-        ("cat", vec!["--", path], false),
-    ];
+    run_preview_commands(Path::new(path), None, repo_root)
+}
 
-    let mut last_error = None;
+/// Preview arbitrary content using the same renderer as file previews while preserving the
+/// original path for syntax detection and header display.
+pub fn render_content_preview(path: &str, content: &str, repo_root: &Path) -> Result<FilePreview> {
+    let temp_file = create_temp_preview_file(path, content)?;
+    run_preview_commands(temp_file.path(), Some(path), repo_root)
+}
 
-    for (program, args, uses_ansi) in preview_commands {
-        match Command::new(program)
-            .args(&args)
-            .current_dir(repo_root)
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                return Ok(FilePreview {
-                    content: String::from_utf8_lossy(&output.stdout).to_string(),
-                    uses_ansi,
-                });
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                last_error = Some(anyhow::anyhow!(
-                    "{} {} failed: {}",
-                    program,
-                    args.join(" "),
-                    stderr.trim()
-                ));
-            }
-            Err(err) if err.kind() == ErrorKind::NotFound => continue,
-            Err(err) => last_error = Some(err.into()),
-        }
+/// File content at an arbitrary git revision expression such as `HEAD:path` or `:path`.
+pub fn get_file_content_at_rev(rev_colon_path: &str, repo_root: &Path) -> Result<String> {
+    super::run_git(&["show", rev_colon_path], repo_root)
+}
+
+/// Detect whether an untracked file would be shown as a binary diff.
+pub fn is_binary_untracked_file(path: &str, repo_root: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["diff", "--no-index", "--", "/dev/null", path])
+        .current_dir(repo_root)
+        .output()?;
+
+    if output.status.success() || output.status.code() == Some(1) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.contains("Binary files"))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!(
+            "git diff --no-index -- /dev/null {} failed: {}",
+            path,
+            stderr.trim()
+        ))
     }
-
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No preview command available")))
 }
 
 /// Display diff (may be colored by delta/difftastic)
@@ -229,8 +297,15 @@ fn get_difftastic_commit_diff(revision: &str, path: &str, repo_root: &Path) -> R
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn is_binary_diff_text(diff_text: &str) -> bool {
+    diff_text.lines().any(|line| {
+        (line.starts_with("Binary files ") && line.ends_with(" differ"))
+            || line == "GIT binary patch"
+    })
+}
+
 pub fn parse_diff(diff_text: &str) -> FileDiff {
-    if diff_text.contains("Binary files") {
+    if is_binary_diff_text(diff_text) {
         return FileDiff {
             path: String::new(),
             is_binary: true,
@@ -347,6 +422,31 @@ index abc..def 100644
     }
 
     #[test]
+    fn test_binary_detection_git_binary_patch_format() {
+        let diff =
+            "diff --git a/img.png b/img.png\nindex abc..def 100644\nGIT binary patch\nliteral 123\nabc\n";
+        let fd = parse_diff(diff);
+        assert!(fd.is_binary);
+        assert!(fd.hunks.is_empty());
+    }
+
+    #[test]
+    fn test_patch_containing_binary_files_literal_is_not_binary() {
+        let diff = r#"diff --git a/src/lib.rs b/src/lib.rs
+index abc..def 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-fn before() {}
++fn after() { println!("Binary files"); }
+"#;
+
+        let fd = parse_diff(diff);
+        assert!(!fd.is_binary);
+        assert_eq!(fd.hunks.len(), 1);
+    }
+
+    #[test]
     fn test_get_file_preview_reads_plain_file_contents() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -367,6 +467,82 @@ index abc..def 100644
         assert!(preview.content.contains("line 2"));
         if preview.uses_ansi {
             assert!(preview.content.contains("\u{1b}["));
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_file_content_at_rev_reads_head_blob() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-content-at-rev-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Codex"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "codex@example.com"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+
+        fs::write(dir.join("sample.txt"), "hello\nworld\n").unwrap();
+        Command::new("git")
+            .args(["add", "sample.txt"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+
+        let content = get_file_content_at_rev("HEAD:sample.txt", &dir).unwrap();
+        assert_eq!(content, "hello\nworld\n");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_render_content_preview_formats_inline_blob_contents() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-render-content-preview-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let preview = render_content_preview(
+            "src/sample.rs",
+            "fn main() {\n    println!(\"hello\");\n}\n",
+            &dir,
+        )
+        .unwrap();
+
+        assert!(preview.content.contains("println!"));
+        if preview.uses_ansi {
+            assert!(preview.content.contains("\u{1b}["));
+            assert!(preview.content.contains("src/sample.rs"));
         }
 
         fs::remove_dir_all(&dir).unwrap();

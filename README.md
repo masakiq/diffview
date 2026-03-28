@@ -90,10 +90,15 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `G`       | Jump to bottom                                      |
 | `/`       | Start pane-local search                             |
 | `n` / `N` | Jump to next / previous match                       |
+| `f`       | Toggle patch view / full-file view                  |
 | `]`       | Jump to next hunk                                   |
 | `[`       | Jump to previous hunk                               |
 | `v`       | Enter line-select mode                              |
 | `C`       | Run the commit command (`git commit -v` by default) |
+
+> `f` is available only in Diff View. The tree-pane preview always stays in patch mode.
+> In full-file view, `v`, `]`, and `[` are unavailable.
+> Deleted files show the pre-delete contents when full-file view is available.
 
 ### Line-Select Mode (started with `v`)
 

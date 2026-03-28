@@ -42,7 +42,7 @@ diffview has two launch modes.
 | **Unstaged section** | Upper half of the Tree Pane. Shows working tree changes that have not been staged. | ○ | − |
 | **Staged section** | Lower half of the Tree Pane. Shows changes already registered in the index. | ○ | − |
 | **Files section** | The full Tree Pane area (Commit Mode only). Shows the list of files changed in the commit. | − | ○ |
-| **Diff Pane** | Right side of the screen (default 80%). Shows the diff of the selected file. Shown full-screen when focus is DiffView. | ○ | ○ |
+| **Diff Pane** | Right side of the screen (default 80%). Shows the patch diff of the selected file in normal operation. In DiffView focus, `f` toggles between patch and full-file display. Shown full-screen when focus is DiffView. | ○ | ○ |
 | **Inline Select Pane** | A line-selection screen that uses the same full-screen area as the DiffView focus. Allows staging/unstaging one line at a time. | ○ | − |
 | **Status Bar** | Bottom 1 line of the screen. Displays the current tool name, operation hints, and file status legend. | ○ | ○ |
 
@@ -124,7 +124,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 |-------|------------|--------------|
 | **Unstaged** | Unstaged section | Initial focus on launch (unless Unstaged is empty and Staged has items, in which case Staged is the initial focus). Also entered by pressing `k` past the top of the Staged section. |
 | **Staged** | Staged section | Automatically entered by pressing `j` past the bottom of the Unstaged section. |
-| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; diff is shown full-screen). Moving the cursor in the tree updates the diff preview on the right but does not change focus. In Commit Mode, `Enter` works the same as `l`. |
+| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; the selected file is shown full-screen). Moving the cursor in the tree updates the patch preview on the right but does not change focus. In Commit Mode, `Enter` works the same as `l`. Press `f` in DiffView to toggle between patch and full-file display. |
 | **InlineSelect** | Inline Select Pane | Press `v` in DiffView. |
 
 ---
@@ -143,8 +143,8 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Scroll up half page | `Ctrl-u` | DiffView, InlineSelect | Scrolls half the pane height |
 | Jump to top of diff | `g` | DiffView | |
 | Jump to bottom of diff | `G` | DiffView | |
-| Jump to next hunk | `]` | DiffView, InlineSelect | |
-| Jump to previous hunk | `[` | DiffView, InlineSelect | |
+| Jump to next hunk | `]` | DiffView, InlineSelect | Available only in patch view. |
+| Jump to previous hunk | `[` | DiffView, InlineSelect | Available only in patch view. |
 
 ### Tree Operations
 
@@ -174,13 +174,30 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Next match | `n` | Moves to the next match. |
 | Previous match | `N` | Moves to the previous match. |
 
+### Diff View Modes
+
+| Action | Key | Description |
+|--------|-----|-------------|
+| Toggle patch / full file | `f` | Available in DiffView only. Switches the full-screen Diff Pane between patch view and the entire file contents. |
+
+Full-file view rules:
+
+- Tree focus中の右ペインは常に patch preview のまま。`f` は効かない。
+- `v`、`[`、`]` は patch view でのみ有効。
+- binary file は `Full file view unavailable for binary files` を表示する。
+- unmerged file は `Full file view unavailable for unmerged files` を表示する。
+- deleted file は削除前の内容を表示する。
+  - Working Tree / Unstaged: index blob
+  - Working Tree / Staged: `HEAD` blob
+  - Commit Mode: first parent blob
+
 ### Other
 
 | Action | Key | Description |
 |--------|-----|-------------|
 | Copy file path | `c` | Copies the selected or displayed file path to the clipboard. |
 | Commit | Configurable (default `C`) | Runs the configured external commit command. Available in Working Tree Mode only, when focus is Unstaged, Staged, or DiffView. The key can be changed in `config.toml`. |
-| Refresh | `r` | In Working Tree Mode: re-fetches `git status` and updates the screen. In Commit Mode: rebuilds the commit file list and reloads the diff. |
+| Refresh | `r` | In Working Tree Mode: re-fetches `git status` and updates the screen. In Commit Mode: rebuilds the commit file list and reloads the current DiffView content. |
 | Help | `?` | Displays a key binding list in the Status Bar. Available in Unstaged / Staged focus only. |
 | Quit | `q` | Exits the application. |
 

@@ -59,7 +59,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
                     .add_modifier(Modifier::BOLD)
             } else if node.is_untracked() {
                 Style::default().fg(Color::DarkGray)
-            } else if node.is_unmerged() {
+            } else if !app.is_commit_mode() && node.is_unmerged() {
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
             } else {
                 match status_char {
