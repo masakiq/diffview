@@ -66,6 +66,7 @@ The trickiest part of the codebase. Two distinct patch builders:
 - Unit tests live alongside implementation in `#[cfg(test)] mod tests`. When changing `src/git/*`, add or update tests.
 - Responsibilities are separated: Git/domain logic in `src/git/`, UI rendering in `src/ui/`, orchestration in `src/app.rs`.
 - When a change affects build steps, CLI options, or internal structure (types, modules, data flow), ask the user whether this file (`AGENTS.md` / `CLAUDE.md`) needs to be updated.
+- **REQUIRED**: When adding or removing any screen, pane, focus state, key binding, or feature, update `docs/reference.md` in the same PR/commit. This document is the shared vocabulary between users and AI agents — keeping it accurate is mandatory.
 
 ## Configuration
 
