@@ -484,6 +484,7 @@ struct CachedDiff {
     raw_line_count: usize,
     cached_display_text: Option<Text<'static>>,
     content_annotation: Option<ContentAnnotation>,
+    full_file_copyable: bool,
 }
 
 struct LoadedContent {
@@ -495,6 +496,7 @@ struct LoadedContent {
     raw_line_count: usize,
     cached_display_text: Option<Text<'static>>,
     content_annotation: Option<ContentAnnotation>,
+    full_file_copyable: bool,
 }
 
 const DIFF_CACHE_CAPACITY: usize = 64;
@@ -535,6 +537,7 @@ pub struct App {
     pub raw_line_count: usize,
     pub cached_display_text: Option<Text<'static>>,
     pub content_annotation: Option<ContentAnnotation>,
+    pub full_file_copyable: bool,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
     pending_tree_preview: Option<PendingTreePreview>,
@@ -601,6 +604,7 @@ impl App {
             raw_line_count: 0,
             cached_display_text: None,
             content_annotation: None,
+            full_file_copyable: false,
             diff_pane_height: 20,
             diff_pane_width: 0,
             pending_tree_preview: None,
@@ -734,11 +738,14 @@ impl App {
 
     pub fn diff_help_text(&self) -> String {
         let mut ops =
-            "[j/k]scroll [Ctrl-U/D]jump [h]back [c]copy [/]search [n/N]match [r]refresh [q]quit"
+            "[j/k]scroll [Ctrl-U/D]jump [h]back [c]copy-path [/]search [n/N]match [r]refresh [q]quit"
                 .to_string();
 
         if self.diff_view_mode == DiffViewMode::Patch {
             ops.push_str(" [[]/[]]hunk");
+        }
+        if self.diff_view_mode == DiffViewMode::FullFile {
+            ops.push_str(" [P]copy-file");
         }
 
         if !self.is_commit_mode() {
@@ -993,6 +1000,7 @@ impl App {
         raw_line_count: usize,
         cached_display_text: Option<Text<'static>>,
         content_annotation: Option<ContentAnnotation>,
+        full_file_copyable: bool,
     ) {
         self.raw_diff = raw_diff;
         self.display_diff = display_diff;
@@ -1003,6 +1011,7 @@ impl App {
         self.cached_display_text = cached_display_text;
         self.diff_view_mode = view_mode;
         self.content_annotation = content_annotation;
+        self.full_file_copyable = full_file_copyable;
         self.current_file = Some(path.to_string());
         self.diff_origin = Some(pane);
         self.diff_scroll = 0;
@@ -1064,6 +1073,7 @@ impl App {
         is_non_patch: bool,
         force_ansi_rendering: bool,
         content_annotation: Option<ContentAnnotation>,
+        full_file_copyable: bool,
     ) -> LoadedContent {
         let line_infos = if is_non_patch {
             Self::build_preview_line_infos_for(&raw)
@@ -1080,6 +1090,7 @@ impl App {
             file_diff,
             line_infos,
             content_annotation,
+            full_file_copyable,
         }
     }
 
@@ -1107,6 +1118,7 @@ impl App {
             true,
             false,
             content_annotation,
+            false,
         )
     }
 
@@ -1122,6 +1134,7 @@ impl App {
             true,
             false,
             content_annotation,
+            true,
         )
     }
 
@@ -1133,12 +1146,13 @@ impl App {
     ) -> LoadedContent {
         match crate::git::diff::render_content_preview(path, &raw, &self.repo_root) {
             Ok(preview) => self.build_loaded_content(
-                preview.content.clone(),
+                raw,
                 preview.content,
                 FileDiff::default(),
                 true,
                 preview.uses_ansi,
                 content_annotation,
+                true,
             ),
             Err(_) => self.plain_full_file_content(raw, content_annotation),
         }
@@ -1252,15 +1266,8 @@ impl App {
                     Err(_) => self.full_file_unavailable_content("File content unavailable", None),
                 }
             }
-            TreePane::Unstaged => match crate::git::diff::get_file_preview(path, &self.repo_root) {
-                Ok(preview) => self.build_loaded_content(
-                    preview.content.clone(),
-                    preview.content,
-                    FileDiff::default(),
-                    true,
-                    preview.uses_ansi,
-                    None,
-                ),
+            TreePane::Unstaged => match crate::git::diff::get_file_content(path, &self.repo_root) {
+                Ok(raw) => self.rich_full_file_content(path, raw, None),
                 Err(_) => self.full_file_unavailable_content("File content unavailable", None),
             },
         }
@@ -1281,6 +1288,7 @@ impl App {
                 cached.raw_line_count,
                 cached.cached_display_text,
                 cached.content_annotation,
+                cached.full_file_copyable,
             );
             return Ok(());
         }
@@ -1345,6 +1353,7 @@ impl App {
                     is_untracked,
                     force_ansi_rendering,
                     None,
+                    false,
                 )
             }
             DiffViewMode::FullFile => self.load_full_file_content(path, pane),
@@ -1362,6 +1371,7 @@ impl App {
             loaded.raw_line_count,
             loaded.cached_display_text.clone(),
             loaded.content_annotation,
+            loaded.full_file_copyable,
         );
 
         self.insert_cached_diff(
@@ -1375,6 +1385,7 @@ impl App {
                 raw_line_count: loaded.raw_line_count,
                 cached_display_text: loaded.cached_display_text,
                 content_annotation: loaded.content_annotation,
+                full_file_copyable: loaded.full_file_copyable,
             },
         );
 
@@ -1396,6 +1407,7 @@ impl App {
         self.display_line_count = 0;
         self.cached_display_text = None;
         self.content_annotation = None;
+        self.full_file_copyable = false;
     }
 
     /// Reload diff for the current file with the current origin
@@ -2139,6 +2151,35 @@ impl App {
         self.copy_path_to_clipboard(&path);
     }
 
+    fn full_file_clipboard_text(&self) -> Option<&str> {
+        (self.diff_view_mode == DiffViewMode::FullFile
+            && self.full_file_copyable
+            && self.current_file.is_some())
+        .then_some(self.raw_diff.as_str())
+    }
+
+    fn diff_copy_full_file_to_clipboard(&mut self) {
+        let path = match self.current_file.clone() {
+            Some(path) => path,
+            None => {
+                self.error_message = Some("No file selected".to_string());
+                return;
+            }
+        };
+
+        let Some(text) = self.full_file_clipboard_text() else {
+            self.error_message = Some(
+                "Whole-file copy is available only when full file contents are open".to_string(),
+            );
+            return;
+        };
+
+        match clipboard::copy_text(text) {
+            Ok(_) => self.status_message = Some(format!("Copied file contents: {}", path)),
+            Err(e) => self.error_message = Some(format!("Clipboard error: {}", e)),
+        }
+    }
+
     fn copy_path_to_clipboard(&mut self, path: &str) {
         match clipboard::copy_text(path) {
             Ok(_) => self.status_message = Some(format!("Copied path: {}", path)),
@@ -2275,6 +2316,9 @@ impl App {
             KeyCode::Char('[') if !is_full_file_view => self.jump_prev_hunk(),
             KeyCode::Char('c') => {
                 self.diff_copy_path_to_clipboard();
+            }
+            KeyCode::Char('P') => {
+                self.diff_copy_full_file_to_clipboard();
             }
             KeyCode::Char('f') => {
                 self.toggle_diff_view_mode()?;
@@ -2935,6 +2979,7 @@ mod tests {
             raw_line_count: 0,
             cached_display_text: None,
             content_annotation: None,
+            full_file_copyable: false,
             diff_pane_height: 20,
             diff_pane_width: 80,
             pending_tree_preview: None,
@@ -3163,8 +3208,28 @@ mod tests {
         let mut app = make_test_app();
 
         assert!(app.diff_help_text().contains("[f]file"));
+        assert!(!app.diff_help_text().contains("[P]copy-file"));
         app.diff_view_mode = DiffViewMode::FullFile;
         assert!(app.diff_help_text().contains("[f]diff"));
+        assert!(app.diff_help_text().contains("[P]copy-file"));
         assert!(!app.diff_help_text().contains("[v]select"));
+    }
+
+    #[test]
+    fn full_file_clipboard_text_requires_copyable_full_file_state() {
+        let mut app = make_test_app();
+        app.current_file = Some("src/lib.rs".to_string());
+        app.raw_diff = "fn main() {}\n".to_string();
+
+        assert_eq!(app.full_file_clipboard_text(), None);
+
+        app.diff_view_mode = DiffViewMode::FullFile;
+        assert_eq!(app.full_file_clipboard_text(), None);
+
+        app.full_file_copyable = true;
+        assert_eq!(app.full_file_clipboard_text(), Some("fn main() {}\n"));
+
+        app.current_file = None;
+        assert_eq!(app.full_file_clipboard_text(), None);
     }
 }

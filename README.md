@@ -88,9 +88,11 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `Ctrl+U`  | Scroll up half a page                               |
 | `g`       | Jump to top                                         |
 | `G`       | Jump to bottom                                      |
+| `c`       | Copy the displayed file path                        |
 | `/`       | Start pane-local search                             |
 | `n` / `N` | Jump to next / previous match                       |
 | `f`       | Toggle patch view / full-file view                  |
+| `P`       | Copy the opened full file contents                  |
 | `]`       | Jump to next hunk                                   |
 | `[`       | Jump to previous hunk                               |
 | `v`       | Enter line-select mode                              |
@@ -98,6 +100,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 
 > `f` is available only in Diff View. The tree-pane preview always stays in patch mode.
 > In full-file view, `v`, `]`, and `[` are unavailable.
+> `P` is available only in full-file view and copies the raw file contents.
 > Deleted files show the pre-delete contents when full-file view is available.
 
 ### Line-Select Mode (started with `v`)

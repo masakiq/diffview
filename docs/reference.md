@@ -179,11 +179,13 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Action | Key | Description |
 |--------|-----|-------------|
 | Toggle patch / full file | `f` | Available in DiffView only. Switches the full-screen Diff Pane between patch view and the entire file contents. |
+| Copy opened full file | `P` | Available only in full-file view in DiffView. Copies the opened file contents to the clipboard. |
 
 Full-file view rules:
 
 - Tree focus中の右ペインは常に patch preview のまま。`f` は効かない。
 - `v`、`[`、`]` は patch view でのみ有効。
+- `P` は full-file view でのみ有効で、表示中ファイルの raw contents をコピーする。
 - binary file は `Full file view unavailable for binary files` を表示する。
 - unmerged file は `Full file view unavailable for unmerged files` を表示する。
 - deleted file は削除前の内容を表示する。

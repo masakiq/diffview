@@ -139,6 +139,12 @@ pub fn get_file_preview(path: &str, repo_root: &Path) -> Result<FilePreview> {
     run_preview_commands(Path::new(path), None, repo_root)
 }
 
+/// Raw working-tree file contents, decoded lossily as UTF-8 for TUI display/copy.
+pub fn get_file_content(path: &str, repo_root: &Path) -> Result<String> {
+    let bytes = fs::read(repo_root.join(path))?;
+    Ok(String::from_utf8_lossy(&bytes).to_string())
+}
+
 /// Preview arbitrary content using the same renderer as file previews while preserving the
 /// original path for syntax detection and header display.
 pub fn render_content_preview(path: &str, content: &str, repo_root: &Path) -> Result<FilePreview> {
@@ -468,6 +474,28 @@ index abc..def 100644
         if preview.uses_ansi {
             assert!(preview.content.contains("\u{1b}["));
         }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_file_content_reads_plain_file_contents() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-file-content-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let file = dir.join("content.txt");
+        fs::write(&file, "alpha\nbeta\n").unwrap();
+
+        let content = get_file_content("content.txt", &dir).unwrap();
+        assert_eq!(content, "alpha\nbeta\n");
 
         fs::remove_dir_all(&dir).unwrap();
     }
