@@ -25,7 +25,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let title = match &app.current_file {
         Some(path) => {
-            if app.diff_view_mode == crate::app::DiffViewMode::FullFile {
+            if matches!(app.diff_view_mode, crate::app::DiffViewMode::FullFile(_)) {
                 let mode_label = app
                     .content_annotation
                     .map(|annotation| annotation.title_label())

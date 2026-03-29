@@ -42,7 +42,7 @@ diffview has two launch modes.
 | **Unstaged section** | Upper half of the Tree Pane. Shows working tree changes that have not been staged. | ○ | − |
 | **Staged section** | Lower half of the Tree Pane. Shows changes already registered in the index. | ○ | − |
 | **Files section** | The full Tree Pane area (Commit Mode only). Shows the list of files changed in the commit. | − | ○ |
-| **Diff Pane** | Right side of the screen (default 80%). Shows the patch diff of the selected file in normal operation. In DiffView focus, `f` toggles between patch and full-file display. Shown full-screen when focus is DiffView. | ○ | ○ |
+| **Diff Pane** | Right side of the screen (default 80%). Shows the patch diff of the selected file in normal operation. In DiffView focus, `f` opens the current-side full file and `F` opens the previous-side full file; pressing the same key again returns to patch view. Shown full-screen when focus is DiffView. | ○ | ○ |
 | **Inline Select Pane** | A line-selection screen that uses the same full-screen area as the DiffView focus. Allows staging/unstaging one line at a time. | ○ | − |
 | **Status Bar** | Bottom 1 line of the screen. Displays the current tool name, operation hints, and file status legend. | ○ | ○ |
 
@@ -124,7 +124,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 |-------|------------|--------------|
 | **Unstaged** | Unstaged section | Initial focus on launch (unless Unstaged is empty and Staged has items, in which case Staged is the initial focus). Also entered by pressing `k` past the top of the Staged section. |
 | **Staged** | Staged section | Automatically entered by pressing `j` past the bottom of the Unstaged section. |
-| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; the selected file is shown full-screen). Moving the cursor in the tree updates the patch preview on the right but does not change focus. In Commit Mode, `Enter` works the same as `l`. Press `f` in DiffView to toggle between patch and full-file display. |
+| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; the selected file is shown full-screen). Moving the cursor in the tree updates the patch preview on the right but does not change focus. In Commit Mode, `Enter` works the same as `l`. Press `f` in DiffView to toggle the current-side full file, or `F` to toggle the previous-side full file. |
 | **InlineSelect** | Inline Select Pane | Press `v` in DiffView. |
 
 ---
@@ -178,20 +178,28 @@ Indicates which part of the screen is the current input target. Key behavior cha
 
 | Action | Key | Description |
 |--------|-----|-------------|
-| Toggle patch / full file | `f` | Available in DiffView only. Switches the full-screen Diff Pane between patch view and the entire file contents. |
+| Toggle current-side full file | `f` | Available in DiffView only. Switches between patch view and the current side of the selected file. |
+| Toggle previous-side full file | `F` | Available in DiffView only. Switches between patch view and the previous side of the selected file. |
 | Copy opened full file | `P` | Available only in full-file view in DiffView. Copies the opened file contents to the clipboard. |
 
 Full-file view rules:
 
-- Tree focus中の右ペインは常に patch preview のまま。`f` は効かない。
+- Tree focus中の右ペインは常に patch preview のまま。`f` / `F` は効かない。
 - `v`、`[`、`]` は patch view でのみ有効。
-- `P` は full-file view でのみ有効で、表示中ファイルの raw contents をコピーする。
-- binary file は `Full file view unavailable for binary files` を表示する。
-- unmerged file は `Full file view unavailable for unmerged files` を表示する。
-- deleted file は削除前の内容を表示する。
+- `P` はどちらの full-file view でも有効で、表示中ファイルの raw contents をコピーする。
+- `f` は current side を開く。
+  - Working Tree / Unstaged: working tree file
+  - Working Tree / Staged: index blob
+  - Commit Mode: selected commit blob
+- `F` は previous side を開く。
   - Working Tree / Unstaged: index blob
   - Working Tree / Staged: `HEAD` blob
   - Commit Mode: first parent blob
+- target side に file が存在しない場合は unavailable を表示する。
+  - 例: deleted file で `f`
+  - 例: added / untracked file で `F`
+- binary file は `Full file view unavailable for binary files` を表示する。
+- unmerged file は `Full file view unavailable for unmerged files` を表示する。
 
 ### Other
 

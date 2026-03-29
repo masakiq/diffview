@@ -93,21 +93,58 @@ impl DiffTool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiffViewMode {
     Patch,
-    FullFile,
+    FullFile(FullFileSource),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FullFileSource {
+    Current,
+    Previous,
+}
+
+impl FullFileSource {
+    fn title_label(self) -> &'static str {
+        match self {
+            FullFileSource::Current => "file",
+            FullFileSource::Previous => "file:previous",
+        }
+    }
+
+    fn status_message(self) -> &'static str {
+        match self {
+            FullFileSource::Current => "Full file view",
+            FullFileSource::Previous => "Previous full file view",
+        }
+    }
+
+    fn missing_message(self) -> &'static str {
+        match self {
+            FullFileSource::Current => {
+                "Full file view unavailable: file does not exist in current state"
+            }
+            FullFileSource::Previous => {
+                "Full file view unavailable: file does not exist in previous state"
+            }
+        }
+    }
 }
 
 impl DiffViewMode {
     pub fn label(self) -> &'static str {
         match self {
             DiffViewMode::Patch => "patch",
-            DiffViewMode::FullFile => "file",
+            DiffViewMode::FullFile(source) => source.title_label(),
         }
     }
 
-    fn toggle(self) -> Self {
+    fn is_full_file(self) -> bool {
+        matches!(self, DiffViewMode::FullFile(_))
+    }
+
+    fn toggle_full_file(self, source: FullFileSource) -> Self {
         match self {
-            DiffViewMode::Patch => DiffViewMode::FullFile,
-            DiffViewMode::FullFile => DiffViewMode::Patch,
+            DiffViewMode::FullFile(current) if current == source => DiffViewMode::Patch,
+            _ => DiffViewMode::FullFile(source),
         }
     }
 }
@@ -499,6 +536,15 @@ struct LoadedContent {
     full_file_copyable: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FullFileContentTarget {
+    Worktree,
+    Revision {
+        rev_spec: String,
+        content_annotation: Option<ContentAnnotation>,
+    },
+}
+
 const DIFF_CACHE_CAPACITY: usize = 64;
 const TREE_PREVIEW_DEBOUNCE_MS: u64 = 100;
 const TREE_FAST_MOVE_LINES: usize = 5;
@@ -744,7 +790,7 @@ impl App {
         if self.diff_view_mode == DiffViewMode::Patch {
             ops.push_str(" [[]/[]]hunk");
         }
-        if self.diff_view_mode == DiffViewMode::FullFile {
+        if self.diff_view_mode.is_full_file() {
             ops.push_str(" [P]copy-file");
         }
 
@@ -758,8 +804,9 @@ impl App {
             ops.push_str(" [v]select");
         }
         ops.push_str(match self.diff_view_mode {
-            DiffViewMode::Patch => " [f]file",
-            DiffViewMode::FullFile => " [f]diff",
+            DiffViewMode::Patch => " [f]file [F]prev-file",
+            DiffViewMode::FullFile(FullFileSource::Current) => " [f]diff [F]prev-file",
+            DiffViewMode::FullFile(FullFileSource::Previous) => " [f]file [F]diff",
         });
 
         ops
@@ -1188,7 +1235,69 @@ impl App {
         self.patch_file_diff_for(path, pane).is_binary
     }
 
-    fn load_full_file_content(&mut self, path: &str, pane: TreePane) -> LoadedContent {
+    fn full_file_missing_message(
+        &self,
+        file_state: FileSelectionState,
+        source: FullFileSource,
+    ) -> Option<&'static str> {
+        match (source, file_state.status) {
+            (FullFileSource::Current, 'D') => Some(FullFileSource::Current.missing_message()),
+            (FullFileSource::Previous, 'A' | '?') => {
+                Some(FullFileSource::Previous.missing_message())
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_full_file_content_target(
+        &self,
+        path: &str,
+        pane: TreePane,
+        file_state: FileSelectionState,
+        source: FullFileSource,
+    ) -> Result<FullFileContentTarget, &'static str> {
+        if let Some(message) = self.full_file_missing_message(file_state, source) {
+            return Err(message);
+        }
+
+        let content_annotation =
+            matches!((source, file_state.status), (FullFileSource::Previous, 'D'))
+                .then_some(ContentAnnotation::BeforeDelete);
+
+        if let Some(rev) = self.commit_revision.as_deref() {
+            let rev_spec = match source {
+                FullFileSource::Current => format!("{}:{}", rev, path),
+                FullFileSource::Previous => format!("{}^:{}", rev, path),
+            };
+            return Ok(FullFileContentTarget::Revision {
+                rev_spec,
+                content_annotation,
+            });
+        }
+
+        match (pane, source) {
+            (TreePane::Unstaged, FullFileSource::Current) => Ok(FullFileContentTarget::Worktree),
+            (TreePane::Unstaged, FullFileSource::Previous) => Ok(FullFileContentTarget::Revision {
+                rev_spec: format!(":{}", path),
+                content_annotation,
+            }),
+            (TreePane::Staged, FullFileSource::Current) => Ok(FullFileContentTarget::Revision {
+                rev_spec: format!(":{}", path),
+                content_annotation: None,
+            }),
+            (TreePane::Staged, FullFileSource::Previous) => Ok(FullFileContentTarget::Revision {
+                rev_spec: format!("HEAD:{}", path),
+                content_annotation,
+            }),
+        }
+    }
+
+    fn load_full_file_content(
+        &mut self,
+        path: &str,
+        pane: TreePane,
+        source: FullFileSource,
+    ) -> LoadedContent {
         let Some(file_state) = self.file_selection_state(path, pane) else {
             return self.full_file_unavailable_content(
                 "Full file view unavailable: file metadata not found",
@@ -1203,6 +1312,11 @@ impl App {
             );
         }
 
+        let target = match self.resolve_full_file_content_target(path, pane, file_state, source) {
+            Ok(target) => target,
+            Err(message) => return self.full_file_unavailable_content(message, None),
+        };
+
         if self.full_file_is_binary(path, pane, file_state) {
             return self.full_file_unavailable_content(
                 "Full file view unavailable for binary files",
@@ -1210,65 +1324,19 @@ impl App {
             );
         }
 
-        if let Some(rev) = self.commit_revision.as_deref() {
-            let rev_spec = if file_state.status == 'D' {
-                format!("{}^:{}", rev, path)
-            } else {
-                format!("{}:{}", rev, path)
-            };
-
-            return match crate::git::diff::get_file_content_at_rev(&rev_spec, &self.repo_root) {
-                Ok(raw) => self.rich_full_file_content(
-                    path,
-                    raw,
-                    (file_state.status == 'D').then_some(ContentAnnotation::BeforeDelete),
-                ),
-                Err(_) => self.full_file_unavailable_content(
-                    "Full file view unavailable: file does not exist in this revision",
-                    None,
-                ),
-            };
-        }
-
-        match pane {
-            TreePane::Unstaged if file_state.status == 'D' => {
-                match crate::git::diff::get_file_content_at_rev(
-                    &format!(":{}", path),
-                    &self.repo_root,
-                ) {
-                    Ok(raw) => self.rich_full_file_content(
-                        path,
-                        raw,
-                        Some(ContentAnnotation::BeforeDelete),
-                    ),
-                    Err(_) => self.full_file_unavailable_content("File content unavailable", None),
-                }
-            }
-            TreePane::Staged if file_state.status == 'D' => {
-                match crate::git::diff::get_file_content_at_rev(
-                    &format!("HEAD:{}", path),
-                    &self.repo_root,
-                ) {
-                    Ok(raw) => self.rich_full_file_content(
-                        path,
-                        raw,
-                        Some(ContentAnnotation::BeforeDelete),
-                    ),
-                    Err(_) => self.full_file_unavailable_content("File content unavailable", None),
-                }
-            }
-            TreePane::Staged => {
-                match crate::git::diff::get_file_content_at_rev(
-                    &format!(":{}", path),
-                    &self.repo_root,
-                ) {
+        match target {
+            FullFileContentTarget::Worktree => {
+                match crate::git::diff::get_file_content(path, &self.repo_root) {
                     Ok(raw) => self.rich_full_file_content(path, raw, None),
                     Err(_) => self.full_file_unavailable_content("File content unavailable", None),
                 }
             }
-            TreePane::Unstaged => match crate::git::diff::get_file_content(path, &self.repo_root) {
-                Ok(raw) => self.rich_full_file_content(path, raw, None),
-                Err(_) => self.full_file_unavailable_content("File content unavailable", None),
+            FullFileContentTarget::Revision {
+                rev_spec,
+                content_annotation,
+            } => match crate::git::diff::get_file_content_at_rev(&rev_spec, &self.repo_root) {
+                Ok(raw) => self.rich_full_file_content(path, raw, content_annotation),
+                Err(_) => self.full_file_unavailable_content(source.missing_message(), None),
             },
         }
     }
@@ -1356,7 +1424,7 @@ impl App {
                     false,
                 )
             }
-            DiffViewMode::FullFile => self.load_full_file_content(path, pane),
+            DiffViewMode::FullFile(source) => self.load_full_file_content(path, pane, source),
         };
 
         self.apply_loaded_diff_state(
@@ -2152,7 +2220,7 @@ impl App {
     }
 
     fn full_file_clipboard_text(&self) -> Option<&str> {
-        (self.diff_view_mode == DiffViewMode::FullFile
+        (self.diff_view_mode.is_full_file()
             && self.full_file_copyable
             && self.current_file.is_some())
         .then_some(self.raw_diff.as_str())
@@ -2236,16 +2304,16 @@ impl App {
         Ok(())
     }
 
-    fn toggle_diff_view_mode(&mut self) -> Result<()> {
+    fn toggle_full_file_view(&mut self, source: FullFileSource) -> Result<()> {
         let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) else {
             return Ok(());
         };
 
-        let next_mode = self.diff_view_mode.toggle();
+        let next_mode = self.diff_view_mode.toggle_full_file(source);
         self.load_diff(&path, pane, next_mode)?;
         self.status_message = Some(match next_mode {
             DiffViewMode::Patch => "Patch view".to_string(),
-            DiffViewMode::FullFile => "Full file view".to_string(),
+            DiffViewMode::FullFile(source) => source.status_message().to_string(),
         });
         Ok(())
     }
@@ -2256,7 +2324,7 @@ impl App {
             .map(|p| p.to_focus())
             .unwrap_or(Focus::Unstaged);
 
-        if self.diff_view_mode == DiffViewMode::FullFile {
+        if self.diff_view_mode.is_full_file() {
             if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
                 self.load_diff(&path, pane, DiffViewMode::Patch)?;
             } else {
@@ -2274,7 +2342,7 @@ impl App {
     fn handle_diff_key(&mut self, key: KeyEvent) -> Result<()> {
         let line_count = self.display_line_count;
         let half_page = (self.diff_pane_height / 2).max(1);
-        let is_full_file_view = self.diff_view_mode == DiffViewMode::FullFile;
+        let is_full_file_view = self.diff_view_mode.is_full_file();
 
         if self.can_trigger_commit_action(key) {
             self.pending_action = Some(ExternalAction::Commit);
@@ -2321,7 +2389,10 @@ impl App {
                 self.diff_copy_full_file_to_clipboard();
             }
             KeyCode::Char('f') => {
-                self.toggle_diff_view_mode()?;
+                self.toggle_full_file_view(FullFileSource::Current)?;
+            }
+            KeyCode::Char('F') => {
+                self.toggle_full_file_view(FullFileSource::Previous)?;
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.leave_diff_view_to_tree()?;
@@ -3204,15 +3275,141 @@ mod tests {
     }
 
     #[test]
-    fn diff_help_text_switches_toggle_label_in_full_file_view() {
+    fn resolve_full_file_target_uses_previous_side_for_deleted_files() {
+        let mut app = make_test_app();
+        let deleted = FileSelectionState {
+            status: 'D',
+            is_unmerged: false,
+            is_untracked: false,
+        };
+
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "gone.txt",
+                TreePane::Unstaged,
+                deleted,
+                FullFileSource::Previous,
+            ),
+            Ok(FullFileContentTarget::Revision {
+                rev_spec: ":gone.txt".to_string(),
+                content_annotation: Some(ContentAnnotation::BeforeDelete),
+            })
+        );
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "gone.txt",
+                TreePane::Staged,
+                deleted,
+                FullFileSource::Previous,
+            ),
+            Ok(FullFileContentTarget::Revision {
+                rev_spec: "HEAD:gone.txt".to_string(),
+                content_annotation: Some(ContentAnnotation::BeforeDelete),
+            })
+        );
+
+        app.commit_revision = Some("deadbeef".to_string());
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "gone.txt",
+                TreePane::Unstaged,
+                deleted,
+                FullFileSource::Previous,
+            ),
+            Ok(FullFileContentTarget::Revision {
+                rev_spec: "deadbeef^:gone.txt".to_string(),
+                content_annotation: Some(ContentAnnotation::BeforeDelete),
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_full_file_target_rejects_missing_current_and_previous_states() {
+        let app = make_test_app();
+        let deleted = FileSelectionState {
+            status: 'D',
+            is_unmerged: false,
+            is_untracked: false,
+        };
+        let added = FileSelectionState {
+            status: 'A',
+            is_unmerged: false,
+            is_untracked: false,
+        };
+        let untracked = FileSelectionState {
+            status: '?',
+            is_unmerged: false,
+            is_untracked: true,
+        };
+
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "gone.txt",
+                TreePane::Unstaged,
+                deleted,
+                FullFileSource::Current,
+            ),
+            Err(FullFileSource::Current.missing_message())
+        );
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "new.txt",
+                TreePane::Staged,
+                added,
+                FullFileSource::Previous,
+            ),
+            Err(FullFileSource::Previous.missing_message())
+        );
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "scratch.txt",
+                TreePane::Unstaged,
+                untracked,
+                FullFileSource::Previous,
+            ),
+            Err(FullFileSource::Previous.missing_message())
+        );
+    }
+
+    #[test]
+    fn diff_view_mode_toggles_requested_full_file_source() {
+        assert_eq!(
+            DiffViewMode::Patch.toggle_full_file(FullFileSource::Current),
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        assert_eq!(
+            DiffViewMode::Patch.toggle_full_file(FullFileSource::Previous),
+            DiffViewMode::FullFile(FullFileSource::Previous)
+        );
+        assert_eq!(
+            DiffViewMode::FullFile(FullFileSource::Current)
+                .toggle_full_file(FullFileSource::Current),
+            DiffViewMode::Patch
+        );
+        assert_eq!(
+            DiffViewMode::FullFile(FullFileSource::Current)
+                .toggle_full_file(FullFileSource::Previous),
+            DiffViewMode::FullFile(FullFileSource::Previous)
+        );
+    }
+
+    #[test]
+    fn diff_help_text_switches_toggle_labels_in_full_file_views() {
         let mut app = make_test_app();
 
         assert!(app.diff_help_text().contains("[f]file"));
+        assert!(app.diff_help_text().contains("[F]prev-file"));
         assert!(!app.diff_help_text().contains("[P]copy-file"));
-        app.diff_view_mode = DiffViewMode::FullFile;
+
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         assert!(app.diff_help_text().contains("[f]diff"));
+        assert!(app.diff_help_text().contains("[F]prev-file"));
         assert!(app.diff_help_text().contains("[P]copy-file"));
         assert!(!app.diff_help_text().contains("[v]select"));
+
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Previous);
+        assert!(app.diff_help_text().contains("[f]file"));
+        assert!(app.diff_help_text().contains("[F]diff"));
     }
 
     #[test]
@@ -3223,7 +3420,7 @@ mod tests {
 
         assert_eq!(app.full_file_clipboard_text(), None);
 
-        app.diff_view_mode = DiffViewMode::FullFile;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         assert_eq!(app.full_file_clipboard_text(), None);
 
         app.full_file_copyable = true;
