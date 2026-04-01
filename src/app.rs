@@ -137,6 +137,13 @@ impl DiffViewMode {
         }
     }
 
+    fn scroll_kind(self) -> DiffScrollKind {
+        match self {
+            DiffViewMode::Patch => DiffScrollKind::Patch,
+            DiffViewMode::FullFile(_) => DiffScrollKind::FullFile,
+        }
+    }
+
     fn is_full_file(self) -> bool {
         matches!(self, DiffViewMode::FullFile(_))
     }
@@ -511,6 +518,19 @@ struct DiffCacheKey {
     view_mode: DiffViewMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DiffScrollKind {
+    Patch,
+    FullFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DiffScrollKey {
+    path: String,
+    pane: TreePane,
+    kind: DiffScrollKind,
+}
+
 #[derive(Clone)]
 struct CachedDiff {
     raw_diff: String,
@@ -591,6 +611,7 @@ pub struct App {
     diff_cache: HashMap<DiffCacheKey, CachedDiff>,
     diff_cache_order: VecDeque<DiffCacheKey>,
     diff_cache_capacity: usize,
+    diff_scroll_positions: HashMap<DiffScrollKey, usize>,
     search_state: Option<SearchState>,
     search_input: Option<SearchInput>,
 
@@ -658,6 +679,7 @@ impl App {
             diff_cache: HashMap::new(),
             diff_cache_order: VecDeque::new(),
             diff_cache_capacity: DIFF_CACHE_CAPACITY,
+            diff_scroll_positions: HashMap::new(),
             search_state: None,
             search_input: None,
             status_message: None,
@@ -954,6 +976,48 @@ impl App {
             commit_revision: self.commit_revision.clone(),
             view_mode,
         }
+    }
+
+    fn build_diff_scroll_key(
+        &self,
+        path: &str,
+        pane: TreePane,
+        view_mode: DiffViewMode,
+    ) -> DiffScrollKey {
+        DiffScrollKey {
+            path: path.to_string(),
+            pane,
+            kind: view_mode.scroll_kind(),
+        }
+    }
+
+    fn saved_diff_scroll(&self, path: &str, pane: TreePane, view_mode: DiffViewMode) -> usize {
+        self.diff_scroll_positions
+            .get(&self.build_diff_scroll_key(path, pane, view_mode))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn remember_diff_scroll(
+        &mut self,
+        path: &str,
+        pane: TreePane,
+        view_mode: DiffViewMode,
+        scroll: usize,
+    ) {
+        self.diff_scroll_positions
+            .insert(self.build_diff_scroll_key(path, pane, view_mode), scroll);
+    }
+
+    fn remember_current_diff_scroll(&mut self) {
+        if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
+            self.remember_diff_scroll(&path, pane, self.diff_view_mode, self.diff_scroll);
+        }
+    }
+
+    fn restore_saved_diff_scroll(&mut self, path: &str, pane: TreePane, view_mode: DiffViewMode) {
+        let saved = self.saved_diff_scroll(path, pane, view_mode);
+        self.diff_scroll = saved.min(self.display_line_count.saturating_sub(1));
     }
 
     fn touch_diff_cache_key(&mut self, key: DiffCacheKey) {
@@ -1342,6 +1406,8 @@ impl App {
     }
 
     pub fn load_diff(&mut self, path: &str, pane: TreePane, view_mode: DiffViewMode) -> Result<()> {
+        self.remember_current_diff_scroll();
+
         let cache_key = self.build_diff_cache_key(path, pane, view_mode);
         if let Some(cached) = self.get_cached_diff(&cache_key) {
             self.apply_loaded_diff_state(
@@ -1358,6 +1424,7 @@ impl App {
                 cached.content_annotation,
                 cached.full_file_copyable,
             );
+            self.restore_saved_diff_scroll(path, pane, view_mode);
             return Ok(());
         }
 
@@ -1441,6 +1508,7 @@ impl App {
             loaded.content_annotation,
             loaded.full_file_copyable,
         );
+        self.restore_saved_diff_scroll(path, pane, view_mode);
 
         self.insert_cached_diff(
             cache_key,
@@ -1461,6 +1529,7 @@ impl App {
     }
 
     fn clear_diff(&mut self) {
+        self.remember_current_diff_scroll();
         self.diff_view_mode = DiffViewMode::Patch;
         self.display_diff.clear();
         self.raw_diff.clear();
@@ -3058,6 +3127,7 @@ mod tests {
             diff_cache: HashMap::new(),
             diff_cache_order: VecDeque::new(),
             diff_cache_capacity: DIFF_CACHE_CAPACITY,
+            diff_scroll_positions: HashMap::new(),
             search_state: None,
             search_input: None,
             status_message: None,
@@ -3428,5 +3498,210 @@ mod tests {
 
         app.current_file = None;
         assert_eq!(app.full_file_clipboard_text(), None);
+    }
+
+    fn make_cached_diff_with_lines(line_count: usize) -> CachedDiff {
+        let raw_diff = (0..line_count)
+            .map(|idx| format!("line {}", idx))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let line_infos = App::build_preview_line_infos_for(&raw_diff);
+
+        CachedDiff {
+            display_diff: raw_diff.clone(),
+            raw_diff: raw_diff.clone(),
+            file_diff: FileDiff::default(),
+            line_infos,
+            display_line_count: raw_diff.lines().count(),
+            raw_line_count: raw_diff.lines().count(),
+            cached_display_text: None,
+            content_annotation: None,
+            full_file_copyable: false,
+        }
+    }
+
+    fn seed_cached_view(
+        app: &mut App,
+        path: &str,
+        pane: TreePane,
+        view_mode: DiffViewMode,
+        line_count: usize,
+    ) {
+        let key = app.build_diff_cache_key(path, pane, view_mode);
+        app.insert_cached_diff(key, make_cached_diff_with_lines(line_count));
+    }
+
+    #[test]
+    fn load_diff_restores_saved_scroll_for_patch_and_full_file_independently() {
+        let mut app = make_test_app();
+        for view_mode in [
+            DiffViewMode::Patch,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            DiffViewMode::FullFile(FullFileSource::Previous),
+        ] {
+            seed_cached_view(&mut app, "file-a.txt", TreePane::Unstaged, view_mode, 120);
+            seed_cached_view(&mut app, "file-b.txt", TreePane::Unstaged, view_mode, 120);
+        }
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_scroll = 30;
+
+        app.load_diff(
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 0);
+        app.diff_scroll = 50;
+
+        app.load_diff("file-b.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        assert_eq!(app.diff_scroll, 0);
+        app.diff_scroll = 7;
+
+        app.load_diff(
+            "file-b.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 0);
+        app.diff_scroll = 60;
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        assert_eq!(app.diff_scroll, 30);
+
+        app.load_diff(
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 50);
+
+        app.load_diff("file-b.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        assert_eq!(app.diff_scroll, 7);
+
+        app.load_diff(
+            "file-b.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 60);
+    }
+
+    #[test]
+    fn clear_diff_preserves_saved_scroll_for_reopened_file_kind() {
+        let mut app = make_test_app();
+        seed_cached_view(
+            &mut app,
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+        seed_cached_view(
+            &mut app,
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            120,
+        );
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_scroll = 25;
+
+        app.load_diff(
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        app.diff_scroll = 40;
+
+        app.clear_diff();
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        assert_eq!(app.diff_scroll, 25);
+
+        app.load_diff(
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 40);
+    }
+
+    #[test]
+    fn saved_scroll_is_tracked_separately_per_tree_pane_and_kind() {
+        let mut app = make_test_app();
+        for pane in [TreePane::Unstaged, TreePane::Staged] {
+            for view_mode in [
+                DiffViewMode::Patch,
+                DiffViewMode::FullFile(FullFileSource::Current),
+                DiffViewMode::FullFile(FullFileSource::Previous),
+            ] {
+                seed_cached_view(&mut app, "shared.txt", pane, view_mode, 120);
+            }
+        }
+
+        app.load_diff("shared.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_scroll = 12;
+
+        app.load_diff(
+            "shared.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 0);
+        app.diff_scroll = 56;
+
+        app.load_diff("shared.txt", TreePane::Staged, DiffViewMode::Patch)
+            .unwrap();
+        assert_eq!(app.diff_scroll, 0);
+        app.diff_scroll = 34;
+
+        app.load_diff(
+            "shared.txt",
+            TreePane::Staged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 0);
+        app.diff_scroll = 78;
+
+        app.load_diff("shared.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        assert_eq!(app.diff_scroll, 12);
+
+        app.load_diff("shared.txt", TreePane::Staged, DiffViewMode::Patch)
+            .unwrap();
+        assert_eq!(app.diff_scroll, 34);
+
+        app.load_diff(
+            "shared.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 56);
+
+        app.load_diff(
+            "shared.txt",
+            TreePane::Staged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+        )
+        .unwrap();
+        assert_eq!(app.diff_scroll, 78);
     }
 }

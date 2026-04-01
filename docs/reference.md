@@ -184,22 +184,25 @@ Indicates which part of the screen is the current input target. Key behavior cha
 
 Full-file view rules:
 
-- Tree focus中の右ペインは常に patch preview のまま。`f` / `F` は効かない。
-- `v`、`[`、`]` は patch view でのみ有効。
-- `P` はどちらの full-file view でも有効で、表示中ファイルの raw contents をコピーする。
-- `f` は current side を開く。
+- While the tree pane is focused, the right pane always stays in patch preview mode. `f` and `F` have no effect there.
+- `v`, `[`, and `]` are available only in patch view.
+- `P` works in either full-file view and copies the raw contents of the currently displayed file.
+- Scroll position is remembered per file, but stored separately for `Patch` and `FullFile(*)`.
+- The first time you open full-file view with `f`, it starts at the top. After that, `FullFile(Current)` and `FullFile(Previous)` share the same scroll position.
+- When you return to patch view, the file's patch-specific scroll position is restored.
+- `f` opens the current side.
   - Working Tree / Unstaged: working tree file
   - Working Tree / Staged: index blob
   - Commit Mode: selected commit blob
-- `F` は previous side を開く。
+- `F` opens the previous side.
   - Working Tree / Unstaged: index blob
   - Working Tree / Staged: `HEAD` blob
   - Commit Mode: first parent blob
-- target side に file が存在しない場合は unavailable を表示する。
-  - 例: deleted file で `f`
-  - 例: added / untracked file で `F`
-- binary file は `Full file view unavailable for binary files` を表示する。
-- unmerged file は `Full file view unavailable for unmerged files` を表示する。
+- If the file does not exist on the requested side, an unavailable message is shown.
+  - Example: pressing `f` on a deleted file
+  - Example: pressing `F` on an added or untracked file
+- Binary files show `Full file view unavailable for binary files`.
+- Unmerged files show `Full file view unavailable for unmerged files`.
 
 ### Other
 
