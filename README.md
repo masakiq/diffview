@@ -26,6 +26,9 @@ cp target/release/diffview ~/.local/bin/
 # Open the git repository in the current directory
 diffview
 
+# Treat the null object ID as working-tree mode
+diffview 0000000000000000000000000000000000000000
+
 # Open a specific commit diff (read-only)
 diffview 891c1b80075d926818782019351d89aa8fe4ac96
 
@@ -76,6 +79,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `C`       | Run the commit command (`git commit -v` by default) |
 
 > Commit mode (`diffview <REV>`) is read-only: `Enter` opens diff, no stage/unstage operations.
+> The all-zero object ID (`0000000000000000000000000000000000000000`) is treated as a special case and opens working-tree mode instead.
 > Tree search is case-insensitive. In working-tree mode it scans all files in both `Unstaged` and `Staged`, including collapsed entries.
 
 ### Diff View (right pane)

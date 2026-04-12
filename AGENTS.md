@@ -16,6 +16,7 @@ cargo run -- --tool raw        # Run with raw diff (default)
 cargo run -- --tool delta      # Run with delta renderer
 cargo run -- --tool difftastic # Run with difftastic renderer
 cargo run -- 891c1b8           # Commit mode (read-only)
+cargo run -- 0000000000000000000000000000000000000000 # Working tree mode (special-cased null OID)
 ```
 
 Requires rustc 1.88+. If compilation fails with syntax errors, run `rustup update stable`.
@@ -26,7 +27,7 @@ Rust TUI application for interacting with git diffs. Uses ratatui + crossterm fo
 
 ### Data Flow
 
-1. CLI: `diffview [--tool TOOL] [REV]` (`REV` omitted = working tree mode, provided = commit mode)
+1. CLI: `diffview [--tool TOOL] [REV]` (`REV` omitted or all-zero OID = working tree mode, other `REV` = commit mode)
 2. Working tree mode: `git status --porcelain` → parsed into `Vec<GitFile>` (staged/unstaged char pair per file)
 3. Working tree mode: files split into two `TreeSection`s (unstaged vs staged), each with its own `BTreeMap`-based tree
 4. Commit mode: `git show --format= --name-status --find-renames <rev>` → single file tree section
@@ -83,4 +84,4 @@ The trickiest part of the codebase. Two distinct patch builders:
 - `raw`: Full functionality (file/hunk/line staging)
 - `delta`: Full functionality, pipes through `delta` binary for display, re-renders on terminal resize
 - `difftastic`: File-level staging only — AST-based diffs have no parseable hunk structure, so `supports_line_ops()` returns false
-- Commit mode (`diffview <REV>`): read-only for all tools (no stage/unstage, no line apply)
+- Commit mode (`diffview <REV>`): read-only for all tools (no stage/unstage, no line apply). The all-zero object ID is a special case and opens working tree mode instead.

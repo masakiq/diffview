@@ -10,8 +10,8 @@ diffview has two launch modes.
 
 | Mode | How to launch | Description |
 |------|--------------|-------------|
-| **Working Tree Mode** | `diffview` (no arguments) | Operate on diffs between the working tree and the index. Stage and unstage operations are available. |
-| **Commit Mode** | `diffview <REV>` | Browse the changes of a specified commit. Read-only; staging operations are not available. |
+| **Working Tree Mode** | `diffview` (no arguments), or `diffview 0000000000000000000000000000000000000000` | Operate on diffs between the working tree and the index. Stage and unstage operations are available. |
+| **Commit Mode** | `diffview <REV>` | Browse the changes of a specified commit. Read-only; staging operations are not available. The all-zero object ID is treated as a special case and falls back to Working Tree Mode. |
 
 ---
 

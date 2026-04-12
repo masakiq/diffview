@@ -568,6 +568,11 @@ enum FullFileContentTarget {
 const DIFF_CACHE_CAPACITY: usize = 64;
 const TREE_PREVIEW_DEBOUNCE_MS: u64 = 100;
 const TREE_FAST_MOVE_LINES: usize = 5;
+const NULL_COMMIT_OID: &str = "0000000000000000000000000000000000000000";
+
+fn normalize_revision_override(revision_override: Option<String>) -> Option<String> {
+    revision_override.filter(|revision| revision != NULL_COMMIT_OID)
+}
 
 // ─── App ───────────────────────────────────────────────────────────────────
 
@@ -623,7 +628,7 @@ pub struct App {
 impl App {
     pub fn new(tool_override: Option<String>, revision_override: Option<String>) -> Result<Self> {
         let repo_root = crate::git::get_repo_root()?;
-        let commit_revision = match revision_override {
+        let commit_revision = match normalize_revision_override(revision_override) {
             Some(rev) => Some(crate::git::resolve_commit(&rev, &repo_root)?),
             None => None,
         };
@@ -2897,6 +2902,19 @@ fn resume_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_revision_override_treats_null_commit_oid_as_none() {
+        assert_eq!(
+            normalize_revision_override(Some(NULL_COMMIT_OID.to_string())),
+            None
+        );
+        assert_eq!(
+            normalize_revision_override(Some("deadbeef".to_string())),
+            Some("deadbeef".to_string())
+        );
+        assert_eq!(normalize_revision_override(None), None);
+    }
 
     #[test]
     fn next_match_wraps_forward() {
