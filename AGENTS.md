@@ -50,6 +50,12 @@ The UI splits into: left tree pane (1/4 width) + right diff pane (3/4 width) + b
 - Working tree mode: left tree pane is vertically split into unstaged/staged sections
 - Commit mode: left tree pane is a single file tree section (`Files`)
 
+### Interaction Notes
+
+- Working tree mode tree operations use `u` for stage/unstage on files and directories
+- InlineSelect uses `u` to apply the selected lines
+- Commit mode keeps `Enter` as an open shortcut in the tree, equivalent to `l`
+
 ### Partial Patch System (`git/apply.rs`)
 
 The trickiest part of the codebase. Two distinct patch builders:

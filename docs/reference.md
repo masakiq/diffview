@@ -30,7 +30,7 @@ diffview has two launch modes.
 │ │   README.md         M │  │                                          │ │
 │ └───────────────────────┘  └──────────────────────────────────────────┘ │
 │ ─────────────────────────────── Status Bar ───────────────────────────── │
-│ [tool:raw] [j/k]move [Enter]stage ...          M=modified A=added ...   │
+│ [tool:raw] [j/k]move [u]stage ...              M=modified A=added ...   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,7 +101,7 @@ Entered from DiffView by pressing `v`. The Tree Pane is hidden and the diff is s
 │ │  context line                                                        │ │
 │ └─────────────────────────────────────────────────────────────────────┘ │
 │ ──────────────────────────── Status Bar ─────────────────────────────── │
-│ [SELECT] [j/k]move [Enter]apply [v]back [h]tree ...                     │
+│ [SELECT] [j/k]move [u]apply [v]back [h]tree ...                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -158,12 +158,12 @@ Indicates which part of the screen is the current input target. Key behavior cha
 
 | Action | Operation | Description |
 |--------|-----------|-------------|
-| Stage file | Select file in Unstaged section → `Enter` | Adds the entire file to the index. |
-| Unstage file | Select file in Staged section → `Enter` | Removes the entire file from the index. |
-| Stage directory | Select directory in Unstaged section → `Enter` | Stages all files under the directory. |
-| Unstage directory | Select directory in Staged section → `Enter` | Unstages all files under the directory. |
-| Stage by line | `v` in DiffView → select line → `Enter` | Stages one line at a time in Inline Select Pane. Raw / Delta tool only. |
-| Unstage by line | Open a Staged file in DiffView → `v` → `Enter` | Unstages one line at a time in Inline Select Pane. Raw / Delta tool only. |
+| Stage file | Select file in Unstaged section → `u` | Adds the entire file to the index. |
+| Unstage file | Select file in Staged section → `u` | Removes the entire file from the index. |
+| Stage directory | Select directory in Unstaged section → `u` | Stages all files under the directory. |
+| Unstage directory | Select directory in Staged section → `u` | Unstages all files under the directory. |
+| Stage by line | `v` in DiffView → select line → `u` | Stages one line at a time in Inline Select Pane. Raw / Delta tool only. |
+| Unstage by line | Open a Staged file in DiffView → `v` → `u` | Unstages one line at a time in Inline Select Pane. Raw / Delta tool only. |
 
 ### Search
 
@@ -249,7 +249,7 @@ Symbols shown to the right of file names in the Tree Pane.
 ```
 ┌──────────────┬──────────────────────────────────────┬─────────────────────┐
 │ Tool name    │ Operation hints (changes with focus)  │ File status legend  │
-│ [tool:raw]   │ [j/k]move [Enter]stage ...            │ M=modified A=added  │
+│ [tool:raw]   │ [j/k]move [u]stage ...                │ M=modified A=added  │
 └──────────────┴──────────────────────────────────────┴─────────────────────┘
 ```
 
@@ -257,7 +257,7 @@ Errors and operation results are shown in the center of the Status Bar.
 
 | State | Example | Color |
 |-------|---------|-------|
-| Normal | `[j/k]move [Enter]stage ...` | White |
+| Normal | `[j/k]move [u]stage ...` | White |
 | InlineSelect active | `[SELECT] [j/k]move ...` | Black on yellow |
 | Searching | `[SEARCH] /query` | Black on yellow |
 | Operation success | `Staged: src/main.rs` | Yellow |

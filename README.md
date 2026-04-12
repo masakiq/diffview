@@ -69,7 +69,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `Ctrl+D`  | Move down 5 lines                                   |
 | `Ctrl+U`  | Move up 5 lines                                     |
 | `l`       | Show diff for the selected file                     |
-| `Enter`   | Stage/Unstage selected file/dir                     |
+| `u`       | Stage/Unstage selected file/dir                     |
 | `c`       | Copy selected file path                             |
 | `/`       | Start tree search                                   |
 | `n` / `N` | Jump to next / previous match                       |
@@ -110,7 +110,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `j` / `k` | Move cursor                   |
 | `Ctrl+D`  | Jump down half a page         |
 | `Ctrl+U`  | Jump up half a page           |
-| `Enter`   | Stage/Unstage selected lines  |
+| `u`       | Apply selected lines          |
 | `/`       | Start pane-local search       |
 | `n` / `N` | Jump to next / previous match |
 | `]` / `[` | Jump between hunks            |

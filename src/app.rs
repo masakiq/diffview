@@ -798,7 +798,7 @@ impl App {
             "[l/Enter]open [h]back [c]copy [/]search [n/N]match [Ctrl-U/D]5-lines [j/k]move [r]refresh [?]help [q]quit".to_string()
         } else {
             format!(
-                "[l]open [h]back [Enter]stage/unstage [c]copy [/]search [n/N]match [Ctrl-U/D]5-lines [j/k]move [r]refresh [{}]commit [?]help [q]quit",
+                "[l]open [h]back [u]stage/unstage [c]copy [/]search [n/N]match [Ctrl-U/D]5-lines [j/k]move [r]refresh [{}]commit [?]help [q]quit",
                 self.commit_key_label()
             )
         }
@@ -835,7 +835,7 @@ impl App {
     }
 
     pub fn inline_select_help_text(&self) -> String {
-        "[j/k]move [Ctrl-U/D]jump [Enter]apply [v]back [h]tree [/]search [n/N]match [[]/[]]hunk [r]refresh [q]quit".to_string()
+        "[j/k]move [Ctrl-U/D]jump [u]apply [v]back [h]tree [/]search [n/N]match [[]/[]]hunk [r]refresh [q]quit".to_string()
     }
 
     fn can_trigger_commit_action(&self, key: KeyEvent) -> bool {
@@ -2055,8 +2055,15 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => {
                 self.tree_action_left();
             }
-            KeyCode::Enter => {
-                self.tree_enter()?;
+            KeyCode::Char('u')
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.tree_stage_or_unstage()?;
+            }
+            KeyCode::Enter if self.is_commit_mode() => {
+                self.tree_action_right()?;
             }
             KeyCode::Char('c') => {
                 self.tree_copy_path_to_clipboard();
@@ -2199,8 +2206,8 @@ impl App {
         self.tree_mut(pane).fold_parent();
     }
 
-    /// Enter key: stage/unstage file or dir
-    fn tree_enter(&mut self) -> Result<()> {
+    /// Stage or unstage the selected file or directory in working tree mode.
+    fn tree_stage_or_unstage(&mut self) -> Result<()> {
         if self.is_commit_mode() {
             return self.tree_action_right();
         }
@@ -2479,7 +2486,7 @@ impl App {
                         self.focus = Focus::InlineSelect;
                         self.diff_cursor = self.diff_scroll;
                         self.status_message =
-                            Some("Inline select: j/k move  Enter apply  v/h exit".to_string());
+                            Some("Inline select: j/k move  u apply  v/h exit".to_string());
                     }
                 } else {
                     self.error_message =
@@ -2577,6 +2584,13 @@ impl App {
                     self.diff_scroll = self.diff_cursor;
                 }
             }
+            KeyCode::Char('u')
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.apply_current_line()?;
+            }
             KeyCode::Char('/') => {
                 self.begin_search();
             }
@@ -2584,9 +2598,6 @@ impl App {
             KeyCode::Char('N') => self.navigate_search(false),
             KeyCode::Char(']') => self.jump_next_hunk(),
             KeyCode::Char('[') => self.jump_prev_hunk(),
-            KeyCode::Enter => {
-                self.apply_current_line()?;
-            }
             KeyCode::Char('v') => {
                 self.focus = Focus::DiffView;
             }
@@ -2913,6 +2924,30 @@ mod tests {
         let ctrl_g = KeyBinding::parse("ctrl-g").unwrap();
         assert!(ctrl_g.matches(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)));
         assert!(!ctrl_g.matches(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn tree_help_uses_u_for_working_tree_staging() {
+        let app = make_test_app();
+
+        assert!(app.tree_help_text().contains("[u]stage/unstage"));
+        assert!(!app.tree_help_text().contains("[Enter]stage/unstage"));
+    }
+
+    #[test]
+    fn tree_help_keeps_enter_for_commit_mode_open() {
+        let mut app = make_test_app();
+        app.commit_revision = Some("deadbeef".to_string());
+
+        assert!(app.tree_help_text().contains("[l/Enter]open"));
+    }
+
+    #[test]
+    fn inline_select_help_uses_u_for_apply() {
+        let app = make_test_app();
+
+        assert!(app.inline_select_help_text().contains("[u]apply"));
+        assert!(!app.inline_select_help_text().contains("[Enter]apply"));
     }
 
     #[test]
