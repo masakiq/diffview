@@ -530,6 +530,7 @@ struct CachedDiff {
     content_annotation: Option<ContentAnnotation>,
     full_file_copyable: bool,
     full_file_content_offset: usize,
+    full_file_highlight_lines: Vec<u32>,
 }
 
 struct LoadedContent {
@@ -543,6 +544,7 @@ struct LoadedContent {
     content_annotation: Option<ContentAnnotation>,
     full_file_copyable: bool,
     full_file_content_offset: usize,
+    full_file_highlight_lines: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -599,6 +601,7 @@ pub struct App {
     pub content_annotation: Option<ContentAnnotation>,
     pub full_file_copyable: bool,
     pub full_file_content_offset: usize,
+    pub full_file_highlight_lines: Vec<u32>,
     pub full_file_show_line_numbers: bool,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
@@ -669,6 +672,7 @@ impl App {
             content_annotation: None,
             full_file_copyable: false,
             full_file_content_offset: 0,
+            full_file_highlight_lines: Vec::new(),
             full_file_show_line_numbers: true,
             diff_pane_height: 20,
             diff_pane_width: 0,
@@ -1108,6 +1112,7 @@ impl App {
         content_annotation: Option<ContentAnnotation>,
         full_file_copyable: bool,
         full_file_content_offset: usize,
+        full_file_highlight_lines: Vec<u32>,
     ) {
         self.raw_diff = raw_diff;
         self.display_diff = display_diff;
@@ -1120,6 +1125,7 @@ impl App {
         self.content_annotation = content_annotation;
         self.full_file_copyable = full_file_copyable;
         self.full_file_content_offset = full_file_content_offset;
+        self.full_file_highlight_lines = full_file_highlight_lines;
         self.current_file = Some(path.to_string());
         self.diff_origin = Some(pane);
         self.diff_scroll = 0;
@@ -1183,6 +1189,7 @@ impl App {
         content_annotation: Option<ContentAnnotation>,
         full_file_copyable: bool,
         full_file_content_offset: usize,
+        full_file_highlight_lines: Vec<u32>,
     ) -> LoadedContent {
         let line_infos = if is_non_patch {
             Self::build_preview_line_infos_for(&raw)
@@ -1201,6 +1208,7 @@ impl App {
             content_annotation,
             full_file_copyable,
             full_file_content_offset,
+            full_file_highlight_lines,
         }
     }
 
@@ -1230,6 +1238,7 @@ impl App {
             content_annotation,
             false,
             0,
+            Vec::new(),
         )
     }
 
@@ -1237,6 +1246,7 @@ impl App {
         &self,
         raw: String,
         content_annotation: Option<ContentAnnotation>,
+        highlight_lines: Vec<u32>,
     ) -> LoadedContent {
         self.build_loaded_content(
             raw.clone(),
@@ -1247,6 +1257,7 @@ impl App {
             content_annotation,
             true,
             0,
+            highlight_lines,
         )
     }
 
@@ -1255,6 +1266,7 @@ impl App {
         path: &str,
         raw: String,
         content_annotation: Option<ContentAnnotation>,
+        highlight_lines: Vec<u32>,
     ) -> LoadedContent {
         match crate::git::diff::render_content_preview(
             path,
@@ -1271,8 +1283,9 @@ impl App {
                 content_annotation,
                 true,
                 preview.content_offset,
+                highlight_lines,
             ),
-            Err(_) => self.plain_full_file_content(raw, content_annotation),
+            Err(_) => self.plain_full_file_content(raw, content_annotation, highlight_lines),
         }
     }
 
@@ -1290,20 +1303,6 @@ impl App {
         };
 
         parse_diff(&raw)
-    }
-
-    fn full_file_is_binary(
-        &mut self,
-        path: &str,
-        pane: TreePane,
-        file_state: FileSelectionState,
-    ) -> bool {
-        if file_state.is_untracked {
-            return crate::git::diff::is_binary_untracked_file(path, &self.repo_root)
-                .unwrap_or(false);
-        }
-
-        self.patch_file_diff_for(path, pane).is_binary
     }
 
     fn full_file_missing_message(
@@ -1388,17 +1387,30 @@ impl App {
             Err(message) => return self.full_file_unavailable_content(message, None),
         };
 
-        if self.full_file_is_binary(path, pane, file_state) {
+        let file_diff = if file_state.is_untracked {
+            FileDiff::default()
+        } else {
+            self.patch_file_diff_for(path, pane)
+        };
+
+        let is_binary = if file_state.is_untracked {
+            crate::git::diff::is_binary_untracked_file(path, &self.repo_root).unwrap_or(false)
+        } else {
+            file_diff.is_binary
+        };
+        if is_binary {
             return self.full_file_unavailable_content(
                 "Full file view unavailable for binary files",
                 Some(ContentAnnotation::BinaryUnavailable),
             );
         }
 
+        let highlight_lines = full_file_diff_highlight_lines(&file_diff, source);
+
         match target {
             FullFileContentTarget::Worktree => {
                 match crate::git::diff::get_file_content(path, &self.repo_root) {
-                    Ok(raw) => self.rich_full_file_content(path, raw, None),
+                    Ok(raw) => self.rich_full_file_content(path, raw, None, highlight_lines),
                     Err(_) => self.full_file_unavailable_content("File content unavailable", None),
                 }
             }
@@ -1406,7 +1418,9 @@ impl App {
                 rev_spec,
                 content_annotation,
             } => match crate::git::diff::get_file_content_at_rev(&rev_spec, &self.repo_root) {
-                Ok(raw) => self.rich_full_file_content(path, raw, content_annotation),
+                Ok(raw) => {
+                    self.rich_full_file_content(path, raw, content_annotation, highlight_lines)
+                }
                 Err(_) => self.full_file_unavailable_content(source.missing_message(), None),
             },
         }
@@ -1431,6 +1445,7 @@ impl App {
                 cached.content_annotation,
                 cached.full_file_copyable,
                 cached.full_file_content_offset,
+                cached.full_file_highlight_lines,
             );
             self.restore_saved_diff_scroll(path, pane, view_mode);
             return Ok(());
@@ -1499,6 +1514,7 @@ impl App {
                     None,
                     false,
                     0,
+                    Vec::new(),
                 )
             }
             DiffViewMode::FullFile(source) => self.load_full_file_content(path, pane, source),
@@ -1518,6 +1534,7 @@ impl App {
             loaded.content_annotation,
             loaded.full_file_copyable,
             loaded.full_file_content_offset,
+            loaded.full_file_highlight_lines.clone(),
         );
         self.restore_saved_diff_scroll(path, pane, view_mode);
 
@@ -1534,6 +1551,7 @@ impl App {
                 content_annotation: loaded.content_annotation,
                 full_file_copyable: loaded.full_file_copyable,
                 full_file_content_offset: loaded.full_file_content_offset,
+                full_file_highlight_lines: loaded.full_file_highlight_lines,
             },
         );
 
@@ -1558,6 +1576,7 @@ impl App {
         self.content_annotation = None;
         self.full_file_copyable = false;
         self.full_file_content_offset = 0;
+        self.full_file_highlight_lines.clear();
     }
 
     /// Reload diff for the current file with the current origin
@@ -3027,6 +3046,38 @@ fn parse_delta_side_by_side_gutter(line: &str) -> Option<(Option<u32>, Option<u3
     Some((parse_field(old_field)?, parse_field(new_field)?))
 }
 
+/// File line numbers (1-based) to give an added/removed background highlight in full-file
+/// view: new-file line numbers of `+` lines for `Current`, old-file line numbers of `-`
+/// lines for `Previous`. Ascending, since hunks and their lines are already in file order.
+fn full_file_diff_highlight_lines(file_diff: &FileDiff, source: FullFileSource) -> Vec<u32> {
+    let mut lines = Vec::new();
+    for hunk in &file_diff.hunks {
+        let mut old_line = hunk.old_start;
+        let mut new_line = hunk.new_start;
+        for line in &hunk.lines {
+            match line {
+                DiffLine::Context(_) => {
+                    old_line += 1;
+                    new_line += 1;
+                }
+                DiffLine::Removed(_) => {
+                    if source == FullFileSource::Previous {
+                        lines.push(old_line);
+                    }
+                    old_line += 1;
+                }
+                DiffLine::Added(_) => {
+                    if source == FullFileSource::Current {
+                        lines.push(new_line);
+                    }
+                    new_line += 1;
+                }
+            }
+        }
+    }
+    lines
+}
+
 fn next_match_from(matches: &[usize], current: usize, inclusive: bool) -> Option<usize> {
     if matches.is_empty() {
         return None;
@@ -3361,6 +3412,7 @@ mod tests {
             content_annotation: None,
             full_file_copyable: false,
             full_file_content_offset: 0,
+            full_file_highlight_lines: Vec::new(),
             full_file_show_line_numbers: true,
             diff_pane_height: 20,
             diff_pane_width: 80,
@@ -3760,6 +3812,7 @@ mod tests {
             content_annotation: None,
             full_file_copyable: false,
             full_file_content_offset: 0,
+            full_file_highlight_lines: Vec::new(),
         }
     }
 
@@ -3983,6 +4036,47 @@ mod tests {
             parse_delta_side_by_side_gutter("just plain diff text, no gutter"),
             None
         );
+    }
+
+    #[test]
+    fn full_file_diff_highlight_lines_collects_added_and_removed_line_numbers() {
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -10,3 +12,3 @@\n context1\n-removed1\n+added1\n context2\n";
+        let file_diff = parse_diff(raw);
+
+        assert_eq!(
+            full_file_diff_highlight_lines(&file_diff, FullFileSource::Current),
+            vec![13]
+        );
+        assert_eq!(
+            full_file_diff_highlight_lines(&file_diff, FullFileSource::Previous),
+            vec![11]
+        );
+    }
+
+    #[test]
+    fn full_file_diff_highlight_lines_covers_multiple_hunks_in_order() {
+        // Hunk 1 contributes two consecutive additions (Current); hunk 2 contributes two
+        // consecutive removals (Previous) — each side's result is a genuine multi-element
+        // sorted list, which is what `apply_full_file_line_bg`'s `binary_search` relies on.
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,4 @@\n context1\n+added1\n+added2\n context2\n@@ -20,4 +22,2 @@\n context3\n-removed1\n-removed2\n context4\n";
+        let file_diff = parse_diff(raw);
+
+        assert_eq!(
+            full_file_diff_highlight_lines(&file_diff, FullFileSource::Current),
+            vec![2, 3]
+        );
+        assert_eq!(
+            full_file_diff_highlight_lines(&file_diff, FullFileSource::Previous),
+            vec![21, 22]
+        );
+    }
+
+    #[test]
+    fn full_file_diff_highlight_lines_is_empty_without_hunks() {
+        let file_diff = FileDiff::default();
+
+        assert!(full_file_diff_highlight_lines(&file_diff, FullFileSource::Current).is_empty());
+        assert!(full_file_diff_highlight_lines(&file_diff, FullFileSource::Previous).is_empty());
     }
 
     #[test]

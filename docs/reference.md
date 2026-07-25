@@ -194,6 +194,7 @@ Full-file view rules:
   - `--tool difftastic`: always opens at the top — difftastic's structural diff has no parseable line-number correspondence.
   - In all cases, the mapped line is positioned at the very top of the pane.
 - Switching between `FullFile(Current)` and `FullFile(Previous)` while already in full-file view (`f`/`F` pressed there, not from patch view) keeps the current scroll row as-is instead of recomputing from the patch pane — both directions (`f`→`F` and `F`→`f`) preserve it.
+- Lines the underlying diff marks as changed get a background tint, independent of `--tool` (full-file content is always rendered through `bat`, not the selected diff tool): the current-side view (`f`) tints added lines dark green, the previous-side view (`F`) tints removed lines dark red. Syntax-highlighted foreground colors are preserved; only the background changes. Unchanged files, or a source where the diff has no hunks to show (e.g. an untracked file), have no tinted lines.
 - Toggling line numbers with `n` re-renders the current full-file view in place and keeps the current scroll position (it does not jump to the top or recompute the patch-relative position).
 - When you return to patch view, the file's patch-specific scroll position is restored.
 - `f` opens the current side.

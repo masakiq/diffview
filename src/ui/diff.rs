@@ -6,8 +6,15 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DiffTool, Focus};
-use crate::ui::highlight::{highlight_line, highlight_text};
+use crate::app::{App, DiffTool, DiffViewMode, Focus, FullFileSource};
+use crate::ui::highlight::highlight_text;
+
+/// Background tint for full-file view's added/removed line highlight, matching delta's own
+/// default `plus-color`/`minus-color` so patch view (under `--tool delta`) and full-file view
+/// read as the same diff. Dark and desaturated so it tints bat's syntax-highlighted
+/// foreground rather than replacing it.
+const FULL_FILE_ADDED_BG: Color = Color::Rgb(0, 40, 0);
+const FULL_FILE_REMOVED_BG: Color = Color::Rgb(63, 0, 1);
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let focused = matches!(app.focus, Focus::DiffView | Focus::InlineSelect);
@@ -80,24 +87,20 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let scroll = app.diff_scroll as u16;
 
-    if use_raw_renderer {
-        let text = build_raw_diff_text(app, content);
-        let para = Paragraph::new(text).scroll((scroll, 0));
-        f.render_widget(para, inner_area);
+    let text = if use_raw_renderer {
+        build_raw_diff_text(app, content)
     } else {
-        let text = app
-            .cached_display_text
+        app.cached_display_text
             .clone()
-            .unwrap_or_else(|| build_raw_diff_text(app, content));
-        let para =
-            Paragraph::new(highlight_text(text, app.diff_search_query())).scroll((scroll, 0));
-        f.render_widget(para, inner_area);
-    }
+            .unwrap_or_else(|| build_raw_diff_text(app, content))
+    };
+    let text = apply_full_file_line_bg(text, app, inner_area.width);
+    let para = Paragraph::new(highlight_text(text, app.diff_search_query())).scroll((scroll, 0));
+    f.render_widget(para, inner_area);
 }
 
 fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
     let inline_select = app.focus == Focus::InlineSelect;
-    let search_query = app.diff_search_query();
 
     let lines: Vec<Line<'a>> = content
         .lines()
@@ -105,33 +108,81 @@ fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
         .map(|(display_idx, line)| {
             let base_style = diff_line_style(line);
 
-            if inline_select {
-                let is_cursor = display_idx == app.diff_cursor;
-                let is_selectable = app
-                    .line_infos
-                    .get(display_idx)
-                    .map(|info| info.is_selectable)
-                    .unwrap_or(false);
-
-                let style = if is_cursor {
-                    base_style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
-                } else if is_selectable {
-                    base_style
-                } else {
-                    base_style
-                };
-
-                highlight_line(vec![Span::styled(line.to_string(), style)], search_query)
+            let style = if inline_select && display_idx == app.diff_cursor {
+                base_style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
             } else {
-                highlight_line(
-                    vec![Span::styled(line.to_string(), base_style)],
-                    search_query,
-                )
-            }
+                base_style
+            };
+
+            Line::from(Span::styled(line.to_string(), style))
         })
         .collect();
 
     Text::from(lines)
+}
+
+/// Overlays an added/removed background tint on full-file view rows that the currently
+/// loaded diff marks as changed (`app.full_file_highlight_lines`, 1-based file line numbers).
+/// The tint is padded with blank, `bg`-styled cells out to `width` so it reaches the right
+/// edge of the pane instead of stopping at the end of the line's own text. A no-op outside
+/// full-file view, or once no lines are marked (e.g. patch view, or an unchanged file).
+/// `app.full_file_content_offset` accounts for bat's leading decoration rows, so row indices
+/// line up with file line numbers the same way scroll targeting does.
+fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
+    let bg = match app.diff_view_mode {
+        DiffViewMode::FullFile(FullFileSource::Current) => FULL_FILE_ADDED_BG,
+        DiffViewMode::FullFile(FullFileSource::Previous) => FULL_FILE_REMOVED_BG,
+        DiffViewMode::Patch => return text,
+    };
+    if app.full_file_highlight_lines.is_empty() {
+        return text;
+    }
+
+    let offset = app.full_file_content_offset;
+    let width = width as usize;
+    let lines = text
+        .lines
+        .into_iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let Some(file_line) = row.checked_sub(offset).map(|n| n as u32 + 1) else {
+                return line;
+            };
+            if app
+                .full_file_highlight_lines
+                .binary_search(&file_line)
+                .is_err()
+            {
+                return line;
+            }
+
+            let mut spans: Vec<Span<'a>> = line
+                .spans
+                .into_iter()
+                .map(|span| Span {
+                    style: span.style.bg(bg),
+                    content: span.content,
+                })
+                .collect();
+
+            let pad = width.saturating_sub(spans.iter().map(Span::width).sum());
+            if pad > 0 {
+                spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+            }
+
+            Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans,
+            }
+        })
+        .collect();
+
+    Text {
+        alignment: text.alignment,
+        style: text.style,
+        lines,
+    }
 }
 
 fn diff_line_style(line: &str) -> Style {
