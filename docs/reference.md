@@ -249,6 +249,8 @@ Full-file view rules:
 | Jump to first / last line | `g` / `G` | Moves the cursor straight to line 1 or the last line of the file; the pane scrolls to keep it visible. |
 | Start / cancel range | `v` | First press marks the cursor's current line as the start of a range. Pressing `v` again while a range is active cancels it (back to a single-line cursor); the cursor itself is unaffected either way. |
 | Copy | `y` | Copies the active range to the clipboard, or just the cursor's line if no range is active. Copied text always ends in a newline, matching whole-file copy (`P`). |
+| Search | `/` | Same as DiffView's search, over the same full-file content. Moving to a match moves the cursor there too (not just the pane). |
+| Next / previous match | `n` / `N` | Moves the cursor (and pane) to the next/previous search match. |
 | Exit to full-file view | `s` | Returns to plain full-file scrolling (DiffView). Clears any active range. |
 | Return to tree | `h` / `←` | Same as DiffView's `h` — leaves full-file view entirely and returns to the tree. Clears any active range. |
 | Quit | `q` | Exits the application. |
@@ -257,7 +259,8 @@ Notes:
 
 - Applies to both `f` (current side) and `F` (previous side) full-file views, and works in both Working Tree Mode and Commit Mode (it's read-only, so — unlike InlineSelect — it isn't restricted to Working Tree Mode).
 - The cursor's own line always gets a `DarkGray` background extended to the full pane width; within an active range, every line in the range gets the same tint, with the exact cursor line additionally bolded. This overlays (and takes precedence over) the added/removed diff tint described above.
-- `f`, `F`, `P`, `n`, and `/` are not available while in FullFileSelect — exit with `s` first.
+- `f`, `F`, and `P` are not available while in FullFileSelect — exit with `s` first.
+- Search state is shared with plain full-file view: starting a search in DiffView and then pressing `s` keeps it active in FullFileSelect (and vice versa), since both search the same underlying content.
 - Entering line select picks up the cursor at whatever file line is already showing at the top of the pane; it does not change the scroll position or jump to line 1. If the view happens to be scrolled above the first content row (e.g. showing part of bat's header decoration) or past the last one, the cursor clamps to the first or last file line respectively.
 
 ### Other

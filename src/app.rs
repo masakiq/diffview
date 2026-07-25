@@ -786,7 +786,7 @@ impl App {
 
     pub fn diff_search_query(&self) -> Option<&str> {
         let scope = match self.focus {
-            Focus::DiffView => SearchScope::DiffView,
+            Focus::DiffView | Focus::FullFileSelect => SearchScope::DiffView,
             Focus::InlineSelect => SearchScope::InlineSelect,
             _ => return None,
         };
@@ -843,7 +843,8 @@ impl App {
     }
 
     pub fn full_file_select_help_text(&self) -> String {
-        "[j/k]move [Ctrl-U/D]jump [v]select [y]copy [s]exit [h]tree [q]quit".to_string()
+        "[j/k]move [Ctrl-U/D]jump [v]select [y]copy [/]search [n/N]match [s]exit [h]tree [q]quit"
+            .to_string()
     }
 
     fn can_trigger_commit_action(&self, key: KeyEvent) -> bool {
@@ -904,7 +905,7 @@ impl App {
                 SearchScope::WorkingTree
             }),
             Focus::Staged if !self.is_commit_mode() => Some(SearchScope::WorkingTree),
-            Focus::DiffView => Some(SearchScope::DiffView),
+            Focus::DiffView | Focus::FullFileSelect => Some(SearchScope::DiffView),
             Focus::InlineSelect => Some(SearchScope::InlineSelect),
             _ => None,
         }
@@ -1821,6 +1822,11 @@ impl App {
             }
             SearchScope::DiffView => {
                 self.diff_scroll = target.min(self.display_line_count.saturating_sub(1));
+                if self.focus == Focus::FullFileSelect {
+                    self.full_file_select_cursor = target
+                        .saturating_sub(self.full_file_content_offset)
+                        .min(self.raw_line_count.saturating_sub(1));
+                }
             }
             SearchScope::InlineSelect => {
                 self.diff_cursor = target.min(self.raw_line_count.saturating_sub(1));
@@ -2763,6 +2769,15 @@ impl App {
             }
             KeyCode::Char('y') => {
                 self.copy_full_file_selection();
+            }
+            KeyCode::Char('/') => {
+                self.begin_search();
+            }
+            KeyCode::Char('n') => {
+                self.navigate_search(true);
+            }
+            KeyCode::Char('N') => {
+                self.navigate_search(false);
             }
             KeyCode::Char('s') => {
                 self.exit_full_file_select();
@@ -4557,6 +4572,60 @@ mod tests {
         assert_eq!(app.full_file_select_cursor, 49);
         assert_eq!(app.diff_scroll, 43);
         assert_eq!(app.full_file_select_anchor, Some(5));
+    }
+
+    #[test]
+    fn full_file_select_slash_begins_diff_view_scoped_search() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(
+            app.search_input.as_ref().map(|i| i.scope),
+            Some(SearchScope::DiffView)
+        );
+    }
+
+    #[test]
+    fn diff_search_query_is_visible_in_full_file_select() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+        app.search_state = Some(SearchState {
+            scope: SearchScope::DiffView,
+            query: "needle".to_string(),
+        });
+
+        assert_eq!(app.diff_search_query(), Some("needle"));
+    }
+
+    #[test]
+    fn full_file_select_n_and_shift_n_move_cursor_and_scroll_to_search_matches() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+        // Rows 0-2 stand in for bat's header decoration; content starts at row 3.
+        app.display_diff = "header1\nheader2\nheader3\nalpha\nneedle\ngamma\n".to_string();
+        app.display_line_count = 6;
+        app.full_file_content_offset = 3;
+        app.raw_line_count = 3;
+        app.diff_scroll = 3;
+        app.full_file_select_cursor = 0;
+        app.search_state = Some(SearchState {
+            scope: SearchScope::DiffView,
+            query: "needle".to_string(),
+        });
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.diff_scroll, 4);
+        assert_eq!(app.full_file_select_cursor, 1);
+
+        // Only one match exists, so N wraps back to the same one rather than erroring.
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.diff_scroll, 4);
+        assert_eq!(app.full_file_select_cursor, 1);
     }
 
     #[test]
