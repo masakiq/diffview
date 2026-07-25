@@ -22,7 +22,10 @@ pub fn render(f: &mut Frame, app: &App) {
     let main_area = vert[0];
     let status_area = vert[1];
 
-    if matches!(app.focus, Focus::DiffView | Focus::InlineSelect) {
+    if matches!(
+        app.focus,
+        Focus::DiffView | Focus::InlineSelect | Focus::FullFileSelect
+    ) {
         diff::render(f, app, main_area);
         statusbar::render(f, app, status_area);
         return;

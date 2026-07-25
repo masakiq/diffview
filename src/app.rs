@@ -29,6 +29,7 @@ pub enum Focus {
     Staged,
     DiffView,
     InlineSelect,
+    FullFileSelect,
 }
 
 // ─── TreePane ───────────────────────────────────────────────────────────────
@@ -603,6 +604,8 @@ pub struct App {
     pub full_file_content_offset: usize,
     pub full_file_highlight_lines: Vec<u32>,
     pub full_file_show_line_numbers: bool,
+    pub full_file_select_cursor: usize,
+    pub full_file_select_anchor: Option<usize>,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
     pending_tree_preview: Option<PendingTreePreview>,
@@ -674,6 +677,8 @@ impl App {
             full_file_content_offset: 0,
             full_file_highlight_lines: Vec::new(),
             full_file_show_line_numbers: true,
+            full_file_select_cursor: 0,
+            full_file_select_anchor: None,
             diff_pane_height: 20,
             diff_pane_width: 0,
             pending_tree_preview: None,
@@ -815,7 +820,7 @@ impl App {
             ops.push_str(" [[]/[]]hunk");
         }
         if self.diff_view_mode.is_full_file() {
-            ops.push_str(" [P]copy-file [n]line-numbers");
+            ops.push_str(" [P]copy-file [n]line-numbers [s]select");
         }
 
         if !self.is_commit_mode() {
@@ -838,6 +843,10 @@ impl App {
 
     pub fn inline_select_help_text(&self) -> String {
         "[j/k]move [Ctrl-U/D]jump [u]apply [v]back [h]tree [/]search [n/N]match [[]/[]]hunk [r]refresh [q]quit".to_string()
+    }
+
+    pub fn full_file_select_help_text(&self) -> String {
+        "[j/k]move [v]select [y]copy [s]exit [h]tree [q]quit".to_string()
     }
 
     fn can_trigger_commit_action(&self, key: KeyEvent) -> bool {
@@ -905,7 +914,10 @@ impl App {
     }
 
     fn compute_diff_pane_width(&self, total_width: u16) -> u16 {
-        if matches!(self.focus, Focus::DiffView | Focus::InlineSelect) {
+        if matches!(
+            self.focus,
+            Focus::DiffView | Focus::InlineSelect | Focus::FullFileSelect
+        ) {
             total_width.saturating_sub(2)
         } else {
             let diff_width =
@@ -1660,7 +1672,7 @@ impl App {
         // Keep focus unless the current tree became empty.
         if self.is_commit_mode() {
             self.focus = match prev_focus {
-                Focus::DiffView | Focus::InlineSelect => Focus::DiffView,
+                Focus::DiffView | Focus::InlineSelect | Focus::FullFileSelect => Focus::DiffView,
                 _ => Focus::Unstaged,
             };
         } else {
@@ -1681,12 +1693,16 @@ impl App {
             Focus::Unstaged | Focus::Staged => {
                 self.tree_load_preview();
             }
-            Focus::DiffView | Focus::InlineSelect => {
+            Focus::DiffView | Focus::InlineSelect | Focus::FullFileSelect => {
                 if current.is_some() {
                     self.reload_current_diff()?;
                     let line_count = self.raw_line_count;
                     self.diff_scroll = prev_scroll.min(line_count.saturating_sub(1));
                     self.diff_cursor = prev_cursor.min(line_count.saturating_sub(1));
+                    self.full_file_select_cursor = self
+                        .full_file_select_cursor
+                        .min(line_count.saturating_sub(1));
+                    self.full_file_select_anchor = None;
                 } else {
                     self.clear_diff();
                 }
@@ -2046,6 +2062,7 @@ impl App {
             Focus::Unstaged | Focus::Staged => self.handle_tree_key(key)?,
             Focus::DiffView => self.handle_diff_key(key)?,
             Focus::InlineSelect => self.handle_inline_select_key(key)?,
+            Focus::FullFileSelect => self.handle_full_file_select_key(key)?,
         }
         Ok(())
     }
@@ -2638,6 +2655,9 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => {
                 self.leave_diff_view_to_tree()?;
             }
+            KeyCode::Char('s') if is_full_file_view => {
+                self.enter_full_file_select();
+            }
             KeyCode::Char('v') => {
                 if is_full_file_view {
                     self.error_message =
@@ -2704,6 +2724,122 @@ impl App {
                 }
                 hunk_count += 1;
             }
+        }
+    }
+
+    // ─── Full file select key handling ──────────────────────────────────
+
+    /// Enters line-select mode in full-file view: cursor starts on whichever file line
+    /// is currently at the top of the pane (i.e. wherever the view was already
+    /// scrolled to), with no active range selection. The viewport itself is left
+    /// untouched — the cursor simply picks up the row that's already visible there.
+    fn enter_full_file_select(&mut self) {
+        if !self.full_file_copyable || self.raw_line_count == 0 {
+            self.error_message = Some("No content to select".to_string());
+            return;
+        }
+        self.focus = Focus::FullFileSelect;
+        self.full_file_select_cursor = self
+            .diff_scroll
+            .saturating_sub(self.full_file_content_offset)
+            .min(self.raw_line_count.saturating_sub(1));
+        self.full_file_select_anchor = None;
+        self.status_message = Some("Line select: j/k move  v select  y copy  s exit".to_string());
+    }
+
+    fn exit_full_file_select(&mut self) {
+        self.full_file_select_anchor = None;
+        self.focus = Focus::DiffView;
+        self.status_message = Some(match self.diff_view_mode {
+            DiffViewMode::FullFile(source) => source.status_message().to_string(),
+            DiffViewMode::Patch => "Patch view".to_string(),
+        });
+    }
+
+    fn handle_full_file_select_key(&mut self, key: KeyEvent) -> Result<()> {
+        let line_count = self.raw_line_count;
+
+        match key.code {
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.full_file_select_cursor + 1 < line_count {
+                    self.full_file_select_cursor += 1;
+                    self.follow_full_file_select_cursor();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.full_file_select_cursor > 0 {
+                    self.full_file_select_cursor -= 1;
+                    self.follow_full_file_select_cursor();
+                }
+            }
+            KeyCode::Char('v') => {
+                self.full_file_select_anchor = match self.full_file_select_anchor {
+                    Some(_) => None,
+                    None => Some(self.full_file_select_cursor),
+                };
+            }
+            KeyCode::Char('y') => {
+                self.copy_full_file_selection();
+            }
+            KeyCode::Char('s') => {
+                self.exit_full_file_select();
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.full_file_select_anchor = None;
+                self.leave_diff_view_to_tree()?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Keeps the cursor's display row within the visible viewport, mirroring
+    /// `handle_inline_select_key`'s own j/k viewport-follow logic.
+    fn follow_full_file_select_cursor(&mut self) {
+        let display_row = self.full_file_content_offset + self.full_file_select_cursor;
+        if display_row < self.diff_scroll {
+            self.diff_scroll = display_row;
+        } else if display_row >= self.diff_scroll + self.diff_pane_height {
+            self.diff_scroll = display_row + 1 - self.diff_pane_height;
+        }
+    }
+
+    /// Raw lines covered by the active selection (or just the cursor's own line when
+    /// no range is active), joined with a trailing newline — matching `P`'s whole-file
+    /// copy, which copies `raw_diff` verbatim and so also ends in a newline.
+    fn full_file_selection_text(&self) -> String {
+        let (lo, hi) = self.full_file_selection_range();
+        let mut text = self
+            .raw_diff
+            .lines()
+            .skip(lo)
+            .take(hi - lo + 1)
+            .collect::<Vec<_>>()
+            .join("\n");
+        text.push('\n');
+        text
+    }
+
+    fn full_file_selection_range(&self) -> (usize, usize) {
+        let cursor = self.full_file_select_cursor;
+        match self.full_file_select_anchor {
+            Some(anchor) => (anchor.min(cursor), anchor.max(cursor)),
+            None => (cursor, cursor),
+        }
+    }
+
+    fn copy_full_file_selection(&mut self) {
+        let (lo, hi) = self.full_file_selection_range();
+        let text = self.full_file_selection_text();
+
+        match clipboard::copy_text(&text) {
+            Ok(_) => {
+                self.status_message = Some(format!("Copied {} line(s)", hi - lo + 1));
+            }
+            Err(e) => self.error_message = Some(format!("Clipboard error: {}", e)),
         }
     }
 
@@ -3414,6 +3550,8 @@ mod tests {
             full_file_content_offset: 0,
             full_file_highlight_lines: Vec::new(),
             full_file_show_line_numbers: true,
+            full_file_select_cursor: 0,
+            full_file_select_anchor: None,
             diff_pane_height: 20,
             diff_pane_width: 80,
             pending_tree_preview: None,
@@ -4253,6 +4391,144 @@ mod tests {
 
         app.display_line_count = 10;
         assert_eq!(app.full_file_scroll_for_line(1000), 9);
+    }
+
+    #[test]
+    fn enter_full_file_select_blocks_when_not_copyable_or_empty() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.focus = Focus::DiffView;
+
+        app.full_file_copyable = false;
+        app.raw_line_count = 10;
+        app.enter_full_file_select();
+        assert_eq!(app.focus, Focus::DiffView);
+        assert!(app.error_message.is_some());
+
+        app.full_file_copyable = true;
+        app.raw_line_count = 0;
+        app.enter_full_file_select();
+        assert_eq!(app.focus, Focus::DiffView);
+        assert!(app.error_message.is_some());
+    }
+
+    #[test]
+    fn enter_full_file_select_places_cursor_on_the_currently_visible_top_line() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.focus = Focus::DiffView;
+        app.full_file_copyable = true;
+        app.raw_line_count = 50;
+        app.full_file_content_offset = 3;
+        app.display_line_count = 60;
+        app.full_file_select_anchor = Some(2);
+
+        // Scrolled partway down: cursor picks up the row already at the top of the
+        // pane, and the viewport itself is left untouched.
+        app.diff_scroll = 40;
+        app.enter_full_file_select();
+        assert_eq!(app.focus, Focus::FullFileSelect);
+        assert_eq!(app.full_file_select_cursor, 37);
+        assert_eq!(app.full_file_select_anchor, None);
+        assert_eq!(app.diff_scroll, 40);
+
+        // Scrolled up into bat's header rows (above the first content row): clamps to
+        // the first file line rather than underflowing.
+        app.focus = Focus::DiffView;
+        app.diff_scroll = 1;
+        app.enter_full_file_select();
+        assert_eq!(app.full_file_select_cursor, 0);
+
+        // Scroll position past the last content row: clamps to the last file line.
+        app.focus = Focus::DiffView;
+        app.diff_scroll = 58;
+        app.enter_full_file_select();
+        assert_eq!(app.full_file_select_cursor, 49);
+    }
+
+    #[test]
+    fn full_file_select_j_k_move_and_follow_viewport() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+        app.raw_line_count = 100;
+        app.full_file_content_offset = 3;
+        app.diff_pane_height = 5;
+        app.full_file_select_cursor = 0;
+        app.diff_scroll = 3;
+
+        for _ in 0..6 {
+            app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+                .unwrap();
+        }
+        assert_eq!(app.full_file_select_cursor, 6);
+        assert_eq!(app.diff_scroll, 5);
+
+        for _ in 0..6 {
+            app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+                .unwrap();
+        }
+        assert_eq!(app.full_file_select_cursor, 0);
+        assert_eq!(app.diff_scroll, 3);
+    }
+
+    #[test]
+    fn full_file_select_v_toggles_anchor_on_and_off() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+        app.raw_line_count = 20;
+        app.full_file_select_cursor = 4;
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_select_anchor, Some(4));
+        assert_eq!(app.full_file_select_cursor, 4);
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_select_anchor, None);
+        assert_eq!(app.full_file_select_cursor, 4);
+    }
+
+    #[test]
+    fn full_file_selection_text_handles_both_anchor_directions() {
+        let mut app = make_test_app();
+        app.raw_diff = "line0\nline1\nline2\nline3\nline4".to_string();
+
+        // No anchor: just the cursor's own line.
+        app.full_file_select_cursor = 2;
+        app.full_file_select_anchor = None;
+        assert_eq!(app.full_file_selection_text(), "line2\n");
+
+        // Anchor before cursor.
+        app.full_file_select_cursor = 3;
+        app.full_file_select_anchor = Some(1);
+        assert_eq!(app.full_file_selection_text(), "line1\nline2\nline3\n");
+
+        // Anchor after cursor — same range regardless of direction.
+        app.full_file_select_cursor = 1;
+        app.full_file_select_anchor = Some(3);
+        assert_eq!(app.full_file_selection_text(), "line1\nline2\nline3\n");
+
+        // A lone blank line is a legitimate 1-line selection, not an error case.
+        app.raw_diff = "line0\n\nline2".to_string();
+        app.full_file_select_cursor = 1;
+        app.full_file_select_anchor = None;
+        assert_eq!(app.full_file_selection_text(), "\n");
+    }
+
+    #[test]
+    fn handle_full_file_select_key_s_exits_to_diff_view_and_clears_anchor() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_select_cursor = 5;
+        app.full_file_select_anchor = Some(2);
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.focus, Focus::DiffView);
+        assert_eq!(app.full_file_select_anchor, None);
     }
 
     #[test]

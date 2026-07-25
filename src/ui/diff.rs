@@ -16,8 +16,15 @@ use crate::ui::highlight::highlight_text;
 const FULL_FILE_ADDED_BG: Color = Color::Rgb(0, 40, 0);
 const FULL_FILE_REMOVED_BG: Color = Color::Rgb(63, 0, 1);
 
+/// Background for the full-file line-select cursor/range, matching the existing
+/// `InlineSelect` cursor's `DarkGray` convention (`build_raw_diff_text`, below).
+const FULL_FILE_SELECT_BG: Color = Color::DarkGray;
+
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let focused = matches!(app.focus, Focus::DiffView | Focus::InlineSelect);
+    let focused = matches!(
+        app.focus,
+        Focus::DiffView | Focus::InlineSelect | Focus::FullFileSelect
+    );
 
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -95,6 +102,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|| build_raw_diff_text(app, content))
     };
     let text = apply_full_file_line_bg(text, app, inner_area.width);
+    let text = apply_full_file_select_cursor(text, app, inner_area.width);
     let para = Paragraph::new(highlight_text(text, app.diff_search_query())).scroll((scroll, 0));
     f.render_widget(para, inner_area);
 }
@@ -121,13 +129,30 @@ fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
     Text::from(lines)
 }
 
+/// Recolors every span's background to `bg` and pads with blank, `bg`-styled cells out
+/// to `width`, so the tint reaches the right edge of the pane instead of stopping at
+/// the end of the line's own text.
+fn tint_line_bg<'a>(spans: Vec<Span<'a>>, bg: Color, width: usize) -> Vec<Span<'a>> {
+    let mut spans: Vec<Span<'a>> = spans
+        .into_iter()
+        .map(|span| Span {
+            style: span.style.bg(bg),
+            content: span.content,
+        })
+        .collect();
+
+    let pad = width.saturating_sub(spans.iter().map(Span::width).sum());
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+    }
+    spans
+}
+
 /// Overlays an added/removed background tint on full-file view rows that the currently
 /// loaded diff marks as changed (`app.full_file_highlight_lines`, 1-based file line numbers).
-/// The tint is padded with blank, `bg`-styled cells out to `width` so it reaches the right
-/// edge of the pane instead of stopping at the end of the line's own text. A no-op outside
-/// full-file view, or once no lines are marked (e.g. patch view, or an unchanged file).
-/// `app.full_file_content_offset` accounts for bat's leading decoration rows, so row indices
-/// line up with file line numbers the same way scroll targeting does.
+/// A no-op outside full-file view, or once no lines are marked (e.g. patch view, or an
+/// unchanged file). `app.full_file_content_offset` accounts for bat's leading decoration
+/// rows, so row indices line up with file line numbers the same way scroll targeting does.
 fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
     let bg = match app.diff_view_mode {
         DiffViewMode::FullFile(FullFileSource::Current) => FULL_FILE_ADDED_BG,
@@ -156,18 +181,60 @@ fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a
                 return line;
             }
 
-            let mut spans: Vec<Span<'a>> = line
-                .spans
-                .into_iter()
-                .map(|span| Span {
-                    style: span.style.bg(bg),
-                    content: span.content,
-                })
-                .collect();
+            Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans: tint_line_bg(line.spans, bg, width),
+            }
+        })
+        .collect();
 
-            let pad = width.saturating_sub(spans.iter().map(Span::width).sum());
-            if pad > 0 {
-                spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+    Text {
+        alignment: text.alignment,
+        style: text.style,
+        lines,
+    }
+}
+
+/// Overlays the line-select cursor/range on full-file view rows while
+/// `Focus::FullFileSelect` is active: every row within `[anchor, cursor]` (or just the
+/// cursor's own row when no range is active) gets `FULL_FILE_SELECT_BG`, with the exact
+/// cursor row additionally bolded to mark it within a multi-row range. Wins over the
+/// add/removed diff tint on overlapping rows, since it's applied afterward.
+fn apply_full_file_select_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
+    if app.focus != Focus::FullFileSelect {
+        return text;
+    }
+
+    let offset = app.full_file_content_offset;
+    let cursor = app.full_file_select_cursor;
+    let (lo, hi) = match app.full_file_select_anchor {
+        Some(anchor) => (anchor.min(cursor), anchor.max(cursor)),
+        None => (cursor, cursor),
+    };
+    let width = width as usize;
+
+    let lines = text
+        .lines
+        .into_iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let Some(file_idx) = row.checked_sub(offset) else {
+                return line;
+            };
+            if file_idx < lo || file_idx > hi {
+                return line;
+            }
+
+            let mut spans = tint_line_bg(line.spans, FULL_FILE_SELECT_BG, width);
+            if file_idx == cursor {
+                spans = spans
+                    .into_iter()
+                    .map(|span| Span {
+                        style: span.style.add_modifier(Modifier::BOLD),
+                        content: span.content,
+                    })
+                    .collect();
             }
 
             Line {
