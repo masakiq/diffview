@@ -57,6 +57,7 @@ fn run_preview_commands(
     target_path: &Path,
     display_name: Option<&str>,
     repo_root: &Path,
+    show_line_numbers: bool,
 ) -> Result<FilePreview> {
     let mut last_error = None;
 
@@ -66,6 +67,9 @@ fn run_preview_commands(
 
         if uses_ansi {
             command.args(["--paging=never", "--color=always", "--decorations=always"]);
+            if !show_line_numbers {
+                command.arg("--style=changes,grid,header-filename,snip");
+            }
             if let Some(display_name) = display_name {
                 command.args(["--file-name", display_name]);
             }
@@ -136,7 +140,7 @@ pub fn get_raw_commit_diff(revision: &str, path: &str, repo_root: &Path) -> Resu
 
 /// File preview for content that `git diff` cannot render, such as untracked files.
 pub fn get_file_preview(path: &str, repo_root: &Path) -> Result<FilePreview> {
-    run_preview_commands(Path::new(path), None, repo_root)
+    run_preview_commands(Path::new(path), None, repo_root, true)
 }
 
 /// Raw working-tree file contents, decoded lossily as UTF-8 for TUI display/copy.
@@ -147,9 +151,14 @@ pub fn get_file_content(path: &str, repo_root: &Path) -> Result<String> {
 
 /// Preview arbitrary content using the same renderer as file previews while preserving the
 /// original path for syntax detection and header display.
-pub fn render_content_preview(path: &str, content: &str, repo_root: &Path) -> Result<FilePreview> {
+pub fn render_content_preview(
+    path: &str,
+    content: &str,
+    repo_root: &Path,
+    show_line_numbers: bool,
+) -> Result<FilePreview> {
     let temp_file = create_temp_preview_file(path, content)?;
-    run_preview_commands(temp_file.path(), Some(path), repo_root)
+    run_preview_commands(temp_file.path(), Some(path), repo_root, show_line_numbers)
 }
 
 /// File content at an arbitrary git revision expression such as `HEAD:path` or `:path`.
@@ -564,6 +573,7 @@ index abc..def 100644
             "src/sample.rs",
             "fn main() {\n    println!(\"hello\");\n}\n",
             &dir,
+            true,
         )
         .unwrap();
 
@@ -571,6 +581,21 @@ index abc..def 100644
         if preview.uses_ansi {
             assert!(preview.content.contains("\u{1b}["));
             assert!(preview.content.contains("src/sample.rs"));
+            // The numbered gutter uses a vertical bar to separate line numbers from content.
+            assert!(preview.content.contains('│'));
+        }
+
+        let preview_without_numbers = render_content_preview(
+            "src/sample.rs",
+            "fn main() {\n    println!(\"hello\");\n}\n",
+            &dir,
+            false,
+        )
+        .unwrap();
+
+        assert!(preview_without_numbers.content.contains("println!"));
+        if preview_without_numbers.uses_ansi {
+            assert!(!preview_without_numbers.content.contains('│'));
         }
 
         fs::remove_dir_all(&dir).unwrap();

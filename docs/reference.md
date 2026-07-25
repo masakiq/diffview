@@ -171,7 +171,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 |--------|-----|-------------|
 | Start search | `/` | Begins entering a search query. |
 | Cancel search | `Esc` | Cancels the search input. |
-| Next match | `n` | Moves to the next match. |
+| Next match | `n` | Moves to the next match. In full-file view, `n` instead toggles line-number display when no search is active — see Diff View Modes. |
 | Previous match | `N` | Moves to the previous match. |
 
 ### Diff View Modes
@@ -181,14 +181,15 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Toggle current-side full file | `f` | Available in DiffView only. Switches between patch view and the current side of the selected file. |
 | Toggle previous-side full file | `F` | Available in DiffView only. Switches between patch view and the previous side of the selected file. |
 | Copy opened full file | `P` | Available only in full-file view in DiffView. Copies the opened file contents to the clipboard. |
+| Toggle line numbers | `n` | Available only in full-file view in DiffView, and only when no search is active (otherwise `n` moves to the next search match — see Search). Toggles the line-number gutter in the file preview and preserves the current scroll position. |
 
 Full-file view rules:
 
 - While the tree pane is focused, the right pane always stays in patch preview mode. `f` and `F` have no effect there.
 - `v`, `[`, and `]` are available only in patch view.
 - `P` works in either full-file view and copies the raw contents of the currently displayed file.
-- Scroll position is remembered per file, but stored separately for `Patch` and `FullFile(*)`.
-- The first time you open full-file view with `f`, it starts at the top. After that, `FullFile(Current)` and `FullFile(Previous)` share the same scroll position.
+- Patch-view scroll position is remembered per file. Full-file view does not remember scroll position: it always opens at the top, even if you scrolled before leaving it.
+- Toggling line numbers with `n` re-renders the current full-file view in place and keeps the current scroll position (it does not jump to the top).
 - When you return to patch view, the file's patch-specific scroll position is restored.
 - `f` opens the current side.
   - Working Tree / Unstaged: working tree file
