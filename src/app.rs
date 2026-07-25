@@ -510,7 +510,6 @@ struct DiffCacheKey {
     pane_width: u16,
     commit_revision: Option<String>,
     view_mode: DiffViewMode,
-    full_file_show_line_numbers: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -603,7 +602,6 @@ pub struct App {
     pub full_file_copyable: bool,
     pub full_file_content_offset: usize,
     pub full_file_highlight_lines: Vec<u32>,
-    pub full_file_show_line_numbers: bool,
     pub full_file_select_cursor: usize,
     pub full_file_select_anchor: Option<usize>,
     pub diff_pane_height: usize,
@@ -676,7 +674,6 @@ impl App {
             full_file_copyable: false,
             full_file_content_offset: 0,
             full_file_highlight_lines: Vec::new(),
-            full_file_show_line_numbers: true,
             full_file_select_cursor: 0,
             full_file_select_anchor: None,
             diff_pane_height: 20,
@@ -820,7 +817,7 @@ impl App {
             ops.push_str(" [[]/[]]hunk");
         }
         if self.diff_view_mode.is_full_file() {
-            ops.push_str(" [P]copy-file [n]line-numbers [s]select");
+            ops.push_str(" [P]copy-file [s]select");
         }
 
         if !self.is_commit_mode() {
@@ -989,7 +986,6 @@ impl App {
             pane_width: self.diff_pane_width,
             commit_revision: self.commit_revision.clone(),
             view_mode,
-            full_file_show_line_numbers: self.full_file_show_line_numbers,
         }
     }
 
@@ -1280,12 +1276,7 @@ impl App {
         content_annotation: Option<ContentAnnotation>,
         highlight_lines: Vec<u32>,
     ) -> LoadedContent {
-        match crate::git::diff::render_content_preview(
-            path,
-            &raw,
-            &self.repo_root,
-            self.full_file_show_line_numbers,
-        ) {
+        match crate::git::diff::render_content_preview(path, &raw, &self.repo_root) {
             Ok(preview) => self.build_loaded_content(
                 raw,
                 preview.content,
@@ -2373,32 +2364,6 @@ impl App {
         }
     }
 
-    fn diff_search_is_active(&self) -> bool {
-        self.search_state
-            .as_ref()
-            .is_some_and(|search| search.scope == SearchScope::DiffView)
-    }
-
-    fn toggle_full_file_line_numbers(&mut self) -> Result<()> {
-        let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) else {
-            return Ok(());
-        };
-        let view_mode = self.diff_view_mode;
-        let preserved_scroll = self.diff_scroll;
-
-        self.full_file_show_line_numbers = !self.full_file_show_line_numbers;
-        self.load_diff(&path, pane, view_mode)?;
-        self.diff_scroll = preserved_scroll.min(self.display_line_count.saturating_sub(1));
-
-        self.status_message = Some(if self.full_file_show_line_numbers {
-            "Line numbers: on".to_string()
-        } else {
-            "Line numbers: off".to_string()
-        });
-
-        Ok(())
-    }
-
     fn copy_path_to_clipboard(&mut self, path: &str) {
         match clipboard::copy_text(path) {
             Ok(_) => self.status_message = Some(format!("Copied path: {}", path)),
@@ -2631,11 +2596,7 @@ impl App {
                 self.begin_search();
             }
             KeyCode::Char('n') => {
-                if is_full_file_view && !self.diff_search_is_active() {
-                    self.toggle_full_file_line_numbers()?;
-                } else {
-                    self.navigate_search(true);
-                }
+                self.navigate_search(true);
             }
             KeyCode::Char('N') => self.navigate_search(false),
             KeyCode::Char(']') if !is_full_file_view => self.jump_next_hunk(),
@@ -3568,7 +3529,6 @@ mod tests {
             full_file_copyable: false,
             full_file_content_offset: 0,
             full_file_highlight_lines: Vec::new(),
-            full_file_show_line_numbers: true,
             full_file_select_cursor: 0,
             full_file_select_anchor: None,
             diff_pane_height: 20,

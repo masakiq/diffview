@@ -200,7 +200,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 |--------|-----|-------------|
 | Start search | `/` | Begins entering a search query. |
 | Cancel search | `Esc` | Cancels the search input. |
-| Next match | `n` | Moves to the next match. In full-file view, `n` instead toggles line-number display when no search is active — see Diff View Modes. |
+| Next match | `n` | Moves to the next match. |
 | Previous match | `N` | Moves to the previous match. |
 
 ### Diff View Modes
@@ -210,7 +210,6 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Toggle current-side full file | `f` | Available in DiffView only. Switches between patch view and the current side of the selected file. |
 | Toggle previous-side full file | `F` | Available in DiffView only. Switches between patch view and the previous side of the selected file. |
 | Copy opened full file | `P` | Available only in full-file view in DiffView. Copies the opened file contents to the clipboard. |
-| Toggle line numbers | `n` | Available only in full-file view in DiffView, and only when no search is active (otherwise `n` moves to the next search match — see Search). Toggles the line-number gutter in the file preview and preserves the current scroll position. |
 | Enter line select | `s` | Available only in full-file view in DiffView. Enters FullFileSelect — see Full File Select below. |
 
 Full-file view rules:
@@ -225,7 +224,6 @@ Full-file view rules:
   - In all cases, the mapped line is positioned at the very top of the pane.
 - Switching between `FullFile(Current)` and `FullFile(Previous)` while already in full-file view (`f`/`F` pressed there, not from patch view) keeps the current scroll row as-is instead of recomputing from the patch pane — both directions (`f`→`F` and `F`→`f`) preserve it.
 - Lines the underlying diff marks as changed get a background tint, independent of `--tool` (full-file content is always rendered through `bat`, not the selected diff tool): the current-side view (`f`) tints added lines dark green, the previous-side view (`F`) tints removed lines dark red. Syntax-highlighted foreground colors are preserved; only the background changes. Unchanged files, or a source where the diff has no hunks to show (e.g. an untracked file), have no tinted lines.
-- Toggling line numbers with `n` re-renders the current full-file view in place and keeps the current scroll position (it does not jump to the top or recompute the patch-relative position).
 - When you return to patch view, the file's patch-specific scroll position is restored.
 - `f` opens the current side.
   - Working Tree / Unstaged: working tree file
