@@ -846,7 +846,7 @@ impl App {
     }
 
     pub fn full_file_select_help_text(&self) -> String {
-        "[j/k]move [v]select [y]copy [s]exit [h]tree [q]quit".to_string()
+        "[j/k]move [Ctrl-U/D]jump [v]select [y]copy [s]exit [h]tree [q]quit".to_string()
     }
 
     fn can_trigger_commit_action(&self, key: KeyEvent) -> bool {
@@ -2758,6 +2758,7 @@ impl App {
 
     fn handle_full_file_select_key(&mut self, key: KeyEvent) -> Result<()> {
         let line_count = self.raw_line_count;
+        let half_page = (self.diff_pane_height / 2).max(1);
 
         match key.code {
             KeyCode::Char('q') => {
@@ -2774,6 +2775,24 @@ impl App {
                     self.full_file_select_cursor -= 1;
                     self.follow_full_file_select_cursor();
                 }
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.full_file_select_cursor =
+                    (self.full_file_select_cursor + half_page).min(line_count.saturating_sub(1));
+                self.follow_full_file_select_cursor();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.full_file_select_cursor =
+                    self.full_file_select_cursor.saturating_sub(half_page);
+                self.follow_full_file_select_cursor();
+            }
+            KeyCode::Char('g') => {
+                self.full_file_select_cursor = 0;
+                self.follow_full_file_select_cursor();
+            }
+            KeyCode::Char('G') => {
+                self.full_file_select_cursor = line_count.saturating_sub(1);
+                self.follow_full_file_select_cursor();
             }
             KeyCode::Char('v') => {
                 self.full_file_select_anchor = match self.full_file_select_anchor {
@@ -4529,6 +4548,55 @@ mod tests {
 
         assert_eq!(app.focus, Focus::DiffView);
         assert_eq!(app.full_file_select_anchor, None);
+    }
+
+    #[test]
+    fn full_file_select_ctrl_d_u_jump_by_half_page_and_follow_viewport() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+        app.raw_line_count = 100;
+        app.full_file_content_offset = 3;
+        app.diff_pane_height = 10;
+        app.full_file_select_cursor = 0;
+        app.diff_scroll = 3;
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.full_file_select_cursor, 10);
+        assert_eq!(app.diff_scroll, 4);
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .unwrap();
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.full_file_select_cursor, 0);
+        assert_eq!(app.diff_scroll, 3);
+    }
+
+    #[test]
+    fn full_file_select_g_and_shift_g_jump_to_first_and_last_line() {
+        let mut app = make_test_app();
+        app.focus = Focus::FullFileSelect;
+        app.raw_line_count = 50;
+        app.full_file_content_offset = 3;
+        app.diff_pane_height = 10;
+        app.full_file_select_cursor = 25;
+        app.diff_scroll = 20;
+        app.full_file_select_anchor = Some(5);
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_select_cursor, 0);
+        assert_eq!(app.diff_scroll, 3);
+        assert_eq!(app.full_file_select_anchor, Some(5));
+
+        app.handle_full_file_select_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_select_cursor, 49);
+        assert_eq!(app.diff_scroll, 43);
+        assert_eq!(app.full_file_select_anchor, Some(5));
     }
 
     #[test]

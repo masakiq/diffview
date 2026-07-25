@@ -168,10 +168,10 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Move up 1 line | `k` / `↑` | All | |
 | Move down 5 lines | `Ctrl-d` | Unstaged, Staged | Fixed 5-line step in the Tree Pane |
 | Move up 5 lines | `Ctrl-u` | Unstaged, Staged | Fixed 5-line step in the Tree Pane |
-| Scroll down half page | `Ctrl-d` | DiffView, InlineSelect | Scrolls half the pane height |
-| Scroll up half page | `Ctrl-u` | DiffView, InlineSelect | Scrolls half the pane height |
-| Jump to top of diff | `g` | DiffView | |
-| Jump to bottom of diff | `G` | DiffView | |
+| Scroll down half page | `Ctrl-d` | DiffView, InlineSelect, FullFileSelect | Scrolls half the pane height. In FullFileSelect, moves the cursor by a half page instead (the pane follows). |
+| Scroll up half page | `Ctrl-u` | DiffView, InlineSelect, FullFileSelect | Scrolls half the pane height. In FullFileSelect, moves the cursor by a half page instead (the pane follows). |
+| Jump to top of diff | `g` | DiffView, FullFileSelect | In FullFileSelect, moves the cursor to the first file line instead of just scrolling. |
+| Jump to bottom of diff | `G` | DiffView, FullFileSelect | In FullFileSelect, moves the cursor to the last file line instead of just scrolling. |
 | Jump to next hunk | `]` | DiffView, InlineSelect | Available only in patch view. |
 | Jump to previous hunk | `[` | DiffView, InlineSelect | Available only in patch view. |
 
@@ -247,6 +247,8 @@ Full-file view rules:
 |--------|-----|-------------|
 | Enter line select | `s` | From DiffView, full-file view only. Cursor starts on the file line currently at the top of the pane; the viewport doesn't move. |
 | Move cursor | `j` / `k` | Moves one line at a time; the pane scrolls to keep the cursor visible. |
+| Jump by half page | `Ctrl-d` / `Ctrl-u` | Moves the cursor by half the pane height at once; the pane scrolls to keep it visible. |
+| Jump to first / last line | `g` / `G` | Moves the cursor straight to line 1 or the last line of the file; the pane scrolls to keep it visible. |
 | Start / cancel range | `v` | First press marks the cursor's current line as the start of a range. Pressing `v` again while a range is active cancels it (back to a single-line cursor); the cursor itself is unaffected either way. |
 | Copy | `y` | Copies the active range to the clipboard, or just the cursor's line if no range is active. Copied text always ends in a newline, matching whole-file copy (`P`). |
 | Exit to full-file view | `s` | Returns to plain full-file scrolling (DiffView). Clears any active range. |
