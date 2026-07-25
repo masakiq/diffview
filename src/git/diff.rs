@@ -35,7 +35,15 @@ pub struct FileDiff {
 pub struct FilePreview {
     pub content: String,
     pub uses_ansi: bool,
+    /// Number of leading decoration lines (top border, filename, mid border) that `bat`
+    /// prepends before the first line of actual file content. Zero when the `cat` fallback
+    /// ran instead, since it emits no decorations.
+    pub content_offset: usize,
 }
+
+/// `bat` always renders exactly this many lines (top border, `File:` line, mid border)
+/// before the first content line, given the `header,grid` style components we request.
+const BAT_HEADER_LINE_COUNT: usize = 3;
 
 struct TempPreviewFile {
     path: PathBuf,
@@ -82,6 +90,7 @@ fn run_preview_commands(
                 return Ok(FilePreview {
                     content: String::from_utf8_lossy(&output.stdout).to_string(),
                     uses_ansi,
+                    content_offset: if uses_ansi { BAT_HEADER_LINE_COUNT } else { 0 },
                 });
             }
             Ok(output) => {

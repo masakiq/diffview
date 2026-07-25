@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::clipboard;
 use crate::config::Config;
-use crate::git::diff::{parse_diff, FileDiff};
+use crate::git::diff::{parse_diff, DiffLine, FileDiff};
 use crate::git::status::{get_commit_files, get_status};
 
 // ─── Focus ──────────────────────────────────────────────────────────────────
@@ -529,6 +529,7 @@ struct CachedDiff {
     cached_display_text: Option<Text<'static>>,
     content_annotation: Option<ContentAnnotation>,
     full_file_copyable: bool,
+    full_file_content_offset: usize,
 }
 
 struct LoadedContent {
@@ -541,6 +542,7 @@ struct LoadedContent {
     cached_display_text: Option<Text<'static>>,
     content_annotation: Option<ContentAnnotation>,
     full_file_copyable: bool,
+    full_file_content_offset: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -596,6 +598,7 @@ pub struct App {
     pub cached_display_text: Option<Text<'static>>,
     pub content_annotation: Option<ContentAnnotation>,
     pub full_file_copyable: bool,
+    pub full_file_content_offset: usize,
     pub full_file_show_line_numbers: bool,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
@@ -665,6 +668,7 @@ impl App {
             cached_display_text: None,
             content_annotation: None,
             full_file_copyable: false,
+            full_file_content_offset: 0,
             full_file_show_line_numbers: true,
             diff_pane_height: 20,
             diff_pane_width: 0,
@@ -1103,6 +1107,7 @@ impl App {
         cached_display_text: Option<Text<'static>>,
         content_annotation: Option<ContentAnnotation>,
         full_file_copyable: bool,
+        full_file_content_offset: usize,
     ) {
         self.raw_diff = raw_diff;
         self.display_diff = display_diff;
@@ -1114,6 +1119,7 @@ impl App {
         self.diff_view_mode = view_mode;
         self.content_annotation = content_annotation;
         self.full_file_copyable = full_file_copyable;
+        self.full_file_content_offset = full_file_content_offset;
         self.current_file = Some(path.to_string());
         self.diff_origin = Some(pane);
         self.diff_scroll = 0;
@@ -1176,6 +1182,7 @@ impl App {
         force_ansi_rendering: bool,
         content_annotation: Option<ContentAnnotation>,
         full_file_copyable: bool,
+        full_file_content_offset: usize,
     ) -> LoadedContent {
         let line_infos = if is_non_patch {
             Self::build_preview_line_infos_for(&raw)
@@ -1193,6 +1200,7 @@ impl App {
             line_infos,
             content_annotation,
             full_file_copyable,
+            full_file_content_offset,
         }
     }
 
@@ -1221,6 +1229,7 @@ impl App {
             false,
             content_annotation,
             false,
+            0,
         )
     }
 
@@ -1237,6 +1246,7 @@ impl App {
             false,
             content_annotation,
             true,
+            0,
         )
     }
 
@@ -1260,6 +1270,7 @@ impl App {
                 preview.uses_ansi,
                 content_annotation,
                 true,
+                preview.content_offset,
             ),
             Err(_) => self.plain_full_file_content(raw, content_annotation),
         }
@@ -1419,6 +1430,7 @@ impl App {
                 cached.cached_display_text,
                 cached.content_annotation,
                 cached.full_file_copyable,
+                cached.full_file_content_offset,
             );
             self.restore_saved_diff_scroll(path, pane, view_mode);
             return Ok(());
@@ -1433,6 +1445,7 @@ impl App {
                         .unwrap_or_else(|_| crate::git::diff::FilePreview {
                             content: String::new(),
                             uses_ansi: false,
+                            content_offset: 0,
                         });
                     force_ansi_rendering = preview.uses_ansi;
                     (preview.content.clone(), preview.content)
@@ -1485,6 +1498,7 @@ impl App {
                     force_ansi_rendering,
                     None,
                     false,
+                    0,
                 )
             }
             DiffViewMode::FullFile(source) => self.load_full_file_content(path, pane, source),
@@ -1503,6 +1517,7 @@ impl App {
             loaded.cached_display_text.clone(),
             loaded.content_annotation,
             loaded.full_file_copyable,
+            loaded.full_file_content_offset,
         );
         self.restore_saved_diff_scroll(path, pane, view_mode);
 
@@ -1518,6 +1533,7 @@ impl App {
                 cached_display_text: loaded.cached_display_text,
                 content_annotation: loaded.content_annotation,
                 full_file_copyable: loaded.full_file_copyable,
+                full_file_content_offset: loaded.full_file_content_offset,
             },
         );
 
@@ -1541,6 +1557,7 @@ impl App {
         self.cached_display_text = None;
         self.content_annotation = None;
         self.full_file_copyable = false;
+        self.full_file_content_offset = 0;
     }
 
     /// Reload diff for the current file with the current origin
@@ -2402,13 +2419,114 @@ impl App {
         Ok(())
     }
 
+    /// File line number (1-based) that the patch pane's currently top-displayed row
+    /// corresponds to, on the given full-file `source` side. `None` means no reliable
+    /// mapping is available (e.g. above the first hunk, or a display the mapping can't
+    /// parse), in which case the caller should leave the full-file view at the top.
+    fn patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
+        match self.tool {
+            DiffTool::Raw => self.raw_patch_top_line_target(source),
+            DiffTool::Delta => self.delta_patch_top_line_target(source),
+            DiffTool::Difftastic => None,
+        }
+    }
+
+    /// Exact for `--tool raw`, since `display_diff` is `raw_diff` verbatim there, so
+    /// `diff_scroll` indexes directly into `line_infos` (built from the same raw text).
+    fn raw_patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
+        let info = self.line_infos.get(self.diff_scroll)?;
+        let hunk = self.file_diff.hunks.get(info.hunk_idx?)?;
+
+        let mut old_line = hunk.old_start;
+        let mut new_line = hunk.new_start;
+
+        if let Some(target_idx) = info.line_in_hunk {
+            for line in hunk.lines.iter().take(target_idx) {
+                match line {
+                    DiffLine::Context(_) => {
+                        old_line += 1;
+                        new_line += 1;
+                    }
+                    DiffLine::Removed(_) => old_line += 1,
+                    DiffLine::Added(_) => new_line += 1,
+                }
+            }
+        }
+
+        Some(match source {
+            FullFileSource::Current => new_line as usize,
+            FullFileSource::Previous => old_line as usize,
+        })
+    }
+
+    /// Best-effort for `--tool delta` in side-by-side mode with line numbers enabled:
+    /// reads the line number delta itself prints in the row's gutter, since delta
+    /// reformats/wraps content and its output can't be walked like raw diff text.
+    /// Returns `None` (graceful no-op) for any other delta configuration.
+    fn delta_patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
+        let lines: Vec<&str> = self.display_diff.lines().collect();
+        let total = lines.len();
+        let mut row = self.diff_scroll.min(total.checked_sub(1)?);
+
+        // Rows outside any rendered hunk block — delta's leading blank line, the blank
+        // gap between hunks, a file banner — don't belong to a file line at all. Skip
+        // forward to the first row that's actually part of a hunk.
+        while parse_delta_side_by_side_gutter(&strip_ansi_codes(lines[row])).is_none() {
+            row += 1;
+            if row >= total {
+                return None;
+            }
+        }
+
+        // From there, a blank number on the target side means this exact row is a
+        // wrapped continuation, or an added/removed-only row — walk upward for the
+        // nearest row within the same hunk block that has one.
+        for candidate_row in (0..=row).rev() {
+            let stripped = strip_ansi_codes(lines[candidate_row]);
+            let Some((old_num, new_num)) = parse_delta_side_by_side_gutter(&stripped) else {
+                break; // left the hunk block; don't bleed into an unrelated one above.
+            };
+            let candidate = match source {
+                FullFileSource::Current => new_num,
+                FullFileSource::Previous => old_num,
+            };
+            if let Some(n) = candidate {
+                return Some(n as usize);
+            }
+        }
+        None
+    }
+
+    /// Scroll offset that places `file_line` (1-based) at the very top of the pane.
+    fn full_file_scroll_for_line(&self, file_line: usize) -> usize {
+        let target_row = self.full_file_content_offset + file_line.saturating_sub(1);
+        target_row.min(self.display_line_count.saturating_sub(1))
+    }
+
     fn toggle_full_file_view(&mut self, source: FullFileSource) -> Result<()> {
         let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) else {
             return Ok(());
         };
 
         let next_mode = self.diff_view_mode.toggle_full_file(source);
+        let target_line = (self.diff_view_mode == DiffViewMode::Patch && next_mode.is_full_file())
+            .then(|| self.patch_top_line_target(source))
+            .flatten();
+        // Switching between FullFile(Current) and FullFile(Previous) (not going through
+        // patch view) keeps the same scroll row, since both sides render with the same
+        // content offset and are almost always line-aligned for a small diff.
+        let preserved_full_file_scroll = (self.diff_view_mode.is_full_file()
+            && next_mode.is_full_file())
+        .then_some(self.diff_scroll);
+
         self.load_diff(&path, pane, next_mode)?;
+
+        if let Some(file_line) = target_line {
+            self.diff_scroll = self.full_file_scroll_for_line(file_line);
+        } else if let Some(scroll) = preserved_full_file_scroll {
+            self.diff_scroll = scroll.min(self.display_line_count.saturating_sub(1));
+        }
+
         self.status_message = Some(match next_mode {
             DiffViewMode::Patch => "Patch view".to_string(),
             DiffViewMode::FullFile(source) => source.status_message().to_string(),
@@ -2863,6 +2981,52 @@ fn contains_ignore_case(text: &str, query: &str) -> bool {
     text.to_lowercase().contains(&query.to_lowercase())
 }
 
+/// Strips ANSI CSI sequences (e.g. `\x1b[38;2;255;0;0m`) so delta's colored output can be
+/// parsed as plain text.
+fn strip_ansi_codes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Parses a single stripped-ANSI row of `delta --side-by-side --line-numbers` output:
+/// `│ OLD │ old content │ NEW │ new content`. Returns `(old_num, new_num)`, where each side
+/// is `None` when its gutter is blank (a wrapped continuation row, or a row that only has
+/// content on the other side). Returns `None` entirely when the row doesn't match this
+/// layout at all (e.g. delta isn't in side-by-side/line-numbers mode, or it's a header row).
+fn parse_delta_side_by_side_gutter(line: &str) -> Option<(Option<u32>, Option<u32>)> {
+    let mut parts = line.splitn(5, '│');
+    let leading = parts.next()?;
+    if !leading.trim().is_empty() {
+        return None;
+    }
+    let old_field = parts.next()?.trim();
+    let _old_content = parts.next()?;
+    let new_field = parts.next()?.trim();
+
+    let parse_field = |field: &str| -> Option<Option<u32>> {
+        if field.is_empty() {
+            Some(None)
+        } else {
+            field.parse::<u32>().ok().map(Some)
+        }
+    };
+
+    Some((parse_field(old_field)?, parse_field(new_field)?))
+}
+
 fn next_match_from(matches: &[usize], current: usize, inclusive: bool) -> Option<usize> {
     if matches.is_empty() {
         return None;
@@ -3196,6 +3360,7 @@ mod tests {
             cached_display_text: None,
             content_annotation: None,
             full_file_copyable: false,
+            full_file_content_offset: 0,
             full_file_show_line_numbers: true,
             diff_pane_height: 20,
             diff_pane_width: 80,
@@ -3594,6 +3759,7 @@ mod tests {
             cached_display_text: None,
             content_annotation: None,
             full_file_copyable: false,
+            full_file_content_offset: 0,
         }
     }
 
@@ -3783,5 +3949,332 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn strip_ansi_codes_removes_csi_sequences() {
+        assert_eq!(
+            strip_ansi_codes("\u{1b}[38;2;255;0;0mred\u{1b}[0m plain"),
+            "red plain"
+        );
+        assert_eq!(strip_ansi_codes("no codes here"), "no codes here");
+    }
+
+    #[test]
+    fn parse_delta_side_by_side_gutter_extracts_numbers_and_blanks() {
+        assert_eq!(
+            parse_delta_side_by_side_gutter("│ 16 │old content │ 18 │new content"),
+            Some((Some(16), Some(18)))
+        );
+        assert_eq!(
+            parse_delta_side_by_side_gutter("│    │            │ 19 │added only"),
+            Some((None, Some(19)))
+        );
+        assert_eq!(
+            parse_delta_side_by_side_gutter("│    │            │    │wrapped continuation"),
+            Some((None, None))
+        );
+    }
+
+    #[test]
+    fn parse_delta_side_by_side_gutter_rejects_non_matching_rows() {
+        assert_eq!(parse_delta_side_by_side_gutter("Δ file.txt"), None);
+        assert_eq!(
+            parse_delta_side_by_side_gutter("just plain diff text, no gutter"),
+            None
+        );
+    }
+
+    #[test]
+    fn raw_patch_top_line_target_maps_context_added_removed_lines() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Raw;
+
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -10,3 +12,3 @@\n context1\n-removed1\n+added1\n context2\n";
+        app.file_diff = parse_diff(raw);
+        app.line_infos = App::build_patch_line_infos(raw);
+
+        // Before the first hunk: no mapping.
+        app.diff_scroll = 0;
+        assert_eq!(app.raw_patch_top_line_target(FullFileSource::Current), None);
+
+        // The "@@" header row itself maps to the hunk's starting lines.
+        app.diff_scroll = 4;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(12)
+        );
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Previous),
+            Some(10)
+        );
+
+        // " context1" (first content row) — same as the hunk start.
+        app.diff_scroll = 5;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(12)
+        );
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Previous),
+            Some(10)
+        );
+
+        // "-removed1" — old side advanced past context1, new side unaffected by the removal.
+        app.diff_scroll = 6;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(13)
+        );
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Previous),
+            Some(11)
+        );
+
+        // "+added1" — new side advanced past context1, old side unaffected by the addition.
+        app.diff_scroll = 7;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(13)
+        );
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Previous),
+            Some(12)
+        );
+
+        // " context2" — both sides advanced past the added/removed lines.
+        app.diff_scroll = 8;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(14)
+        );
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Previous),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn delta_patch_top_line_target_finds_nearest_gutter_number_above_blank_rows() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Delta;
+        app.display_diff = [
+            "Δ file.txt",
+            "──────────",
+            "│ 10 │context1                          │ 12 │context1",
+            "│    │                                  │ 13 │added1 that wraps across two rows↴",
+            "│    │                                  │    │            …continued",
+            "│ 11 │context2                          │ 14 │context2",
+        ]
+        .join("\n");
+
+        // A row with numbers on both sides: read directly.
+        app.diff_scroll = 2;
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Current),
+            Some(12)
+        );
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Previous),
+            Some(10)
+        );
+
+        // The wrapped continuation row (row 4) has blank gutters on both sides; search
+        // upward finds row 3's new-side number, and row 2's old-side number (since the
+        // addition never had an old-side line at all).
+        app.diff_scroll = 4;
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Current),
+            Some(13)
+        );
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Previous),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn delta_patch_top_line_target_is_none_outside_side_by_side_line_number_format() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Delta;
+        app.display_diff = "just some diff text\nwithout a parseable gutter".to_string();
+        app.diff_scroll = 1;
+
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Current),
+            None
+        );
+    }
+
+    #[test]
+    fn delta_patch_top_line_target_skips_forward_past_a_single_invalid_row() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Delta;
+        app.display_diff = [
+            "",
+            "│ 18 │                                   │ 18 │",
+            "│ 19 │use crate::clipboard;              │ 19 │use crate::clipboard;",
+        ]
+        .join("\n");
+        app.diff_scroll = 0; // sitting on delta's leading blank line
+
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Current),
+            Some(18)
+        );
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Previous),
+            Some(18)
+        );
+    }
+
+    #[test]
+    fn delta_patch_top_line_target_skips_forward_past_consecutive_invalid_rows() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Delta;
+        app.display_diff = [
+            "",
+            "",
+            "",
+            "│ 18 │                                   │ 18 │",
+            "│ 19 │use crate::clipboard;              │ 19 │use crate::clipboard;",
+        ]
+        .join("\n");
+        app.diff_scroll = 0;
+
+        assert_eq!(
+            app.delta_patch_top_line_target(FullFileSource::Current),
+            Some(18)
+        );
+    }
+
+    #[test]
+    fn full_file_scroll_for_line_positions_at_top_and_clamps() {
+        let mut app = make_test_app();
+        app.full_file_content_offset = 3;
+        app.display_line_count = 200;
+
+        assert_eq!(app.full_file_scroll_for_line(50), 52);
+        assert_eq!(app.full_file_scroll_for_line(1), 3);
+
+        app.display_line_count = 10;
+        assert_eq!(app.full_file_scroll_for_line(1000), 9);
+    }
+
+    #[test]
+    fn toggle_full_file_view_positions_scroll_from_patch_top_line_for_raw_tool() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Raw;
+        app.diff_pane_height = 20;
+
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -10,3 +12,3 @@\n context1\n-removed1\n+added1\n context2\n";
+        app.file_diff = parse_diff(raw);
+        app.line_infos = App::build_patch_line_infos(raw);
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.current_file = Some("file.txt".to_string());
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.diff_scroll = 8; // " context2" row -> Current(new) file line 14
+
+        let mut full_cached = make_cached_diff_with_lines(500);
+        full_cached.full_file_content_offset = 3;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, full_cached);
+
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        // target_row = content_offset(3) + (file_line 14 - 1) = 16
+        assert_eq!(app.diff_scroll, 16);
+    }
+
+    #[test]
+    fn toggle_full_file_view_opens_at_top_when_no_mapping_available() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Difftastic;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.current_file = Some("file.txt".to_string());
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.diff_scroll = 42;
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            500,
+        );
+
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn toggle_full_file_view_preserves_scroll_between_current_and_previous() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.current_file = Some("file.txt".to_string());
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.diff_scroll = 40;
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+            500,
+        );
+
+        app.toggle_full_file_view(FullFileSource::Previous).unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Previous)
+        );
+        assert_eq!(app.diff_scroll, 40);
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            500,
+        );
+
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        assert_eq!(app.diff_scroll, 40);
+    }
+
+    #[test]
+    fn toggle_full_file_view_clamps_preserved_scroll_to_shorter_side() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.current_file = Some("file.txt".to_string());
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.diff_scroll = 40;
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+            10,
+        );
+
+        app.toggle_full_file_view(FullFileSource::Previous).unwrap();
+
+        assert_eq!(app.diff_scroll, 9);
     }
 }
