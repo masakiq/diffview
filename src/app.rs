@@ -137,13 +137,6 @@ impl DiffViewMode {
         }
     }
 
-    fn scroll_kind(self) -> DiffScrollKind {
-        match self {
-            DiffViewMode::Patch => DiffScrollKind::Patch,
-            DiffViewMode::FullFile(_) => DiffScrollKind::FullFile,
-        }
-    }
-
     fn is_full_file(self) -> bool {
         matches!(self, DiffViewMode::FullFile(_))
     }
@@ -518,17 +511,10 @@ struct DiffCacheKey {
     view_mode: DiffViewMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum DiffScrollKind {
-    Patch,
-    FullFile,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DiffScrollKey {
     path: String,
     pane: TreePane,
-    kind: DiffScrollKind,
 }
 
 #[derive(Clone)]
@@ -983,45 +969,41 @@ impl App {
         }
     }
 
-    fn build_diff_scroll_key(
-        &self,
-        path: &str,
-        pane: TreePane,
-        view_mode: DiffViewMode,
-    ) -> DiffScrollKey {
+    fn build_diff_scroll_key(&self, path: &str, pane: TreePane) -> DiffScrollKey {
         DiffScrollKey {
             path: path.to_string(),
             pane,
-            kind: view_mode.scroll_kind(),
         }
     }
 
-    fn saved_diff_scroll(&self, path: &str, pane: TreePane, view_mode: DiffViewMode) -> usize {
+    fn saved_diff_scroll(&self, path: &str, pane: TreePane) -> usize {
         self.diff_scroll_positions
-            .get(&self.build_diff_scroll_key(path, pane, view_mode))
+            .get(&self.build_diff_scroll_key(path, pane))
             .copied()
             .unwrap_or(0)
     }
 
-    fn remember_diff_scroll(
-        &mut self,
-        path: &str,
-        pane: TreePane,
-        view_mode: DiffViewMode,
-        scroll: usize,
-    ) {
+    fn remember_diff_scroll(&mut self, path: &str, pane: TreePane, scroll: usize) {
         self.diff_scroll_positions
-            .insert(self.build_diff_scroll_key(path, pane, view_mode), scroll);
+            .insert(self.build_diff_scroll_key(path, pane), scroll);
     }
 
+    /// Full file view never remembers its scroll position: it always opens at the top.
     fn remember_current_diff_scroll(&mut self) {
+        if self.diff_view_mode.is_full_file() {
+            return;
+        }
         if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
-            self.remember_diff_scroll(&path, pane, self.diff_view_mode, self.diff_scroll);
+            self.remember_diff_scroll(&path, pane, self.diff_scroll);
         }
     }
 
     fn restore_saved_diff_scroll(&mut self, path: &str, pane: TreePane, view_mode: DiffViewMode) {
-        let saved = self.saved_diff_scroll(path, pane, view_mode);
+        if view_mode.is_full_file() {
+            self.diff_scroll = 0;
+            return;
+        }
+        let saved = self.saved_diff_scroll(path, pane);
         self.diff_scroll = saved.min(self.display_line_count.saturating_sub(1));
     }
 
@@ -3585,7 +3567,7 @@ mod tests {
     }
 
     #[test]
-    fn load_diff_restores_saved_scroll_for_patch_and_full_file_independently() {
+    fn load_diff_restores_saved_scroll_for_patch_but_not_full_file() {
         let mut app = make_test_app();
         for view_mode in [
             DiffViewMode::Patch,
@@ -3623,17 +3605,19 @@ mod tests {
         assert_eq!(app.diff_scroll, 0);
         app.diff_scroll = 60;
 
+        // Patch scroll is still remembered per file...
         app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
             .unwrap();
         assert_eq!(app.diff_scroll, 30);
 
+        // ...but full file view always reopens at the top, regardless of prior scrolling.
         app.load_diff(
             "file-a.txt",
             TreePane::Unstaged,
             DiffViewMode::FullFile(FullFileSource::Previous),
         )
         .unwrap();
-        assert_eq!(app.diff_scroll, 50);
+        assert_eq!(app.diff_scroll, 0);
 
         app.load_diff("file-b.txt", TreePane::Unstaged, DiffViewMode::Patch)
             .unwrap();
@@ -3645,11 +3629,11 @@ mod tests {
             DiffViewMode::FullFile(FullFileSource::Previous),
         )
         .unwrap();
-        assert_eq!(app.diff_scroll, 60);
+        assert_eq!(app.diff_scroll, 0);
     }
 
     #[test]
-    fn clear_diff_preserves_saved_scroll_for_reopened_file_kind() {
+    fn clear_diff_preserves_saved_scroll_for_patch_but_not_full_file() {
         let mut app = make_test_app();
         seed_cached_view(
             &mut app,
@@ -3690,11 +3674,11 @@ mod tests {
             DiffViewMode::FullFile(FullFileSource::Current),
         )
         .unwrap();
-        assert_eq!(app.diff_scroll, 40);
+        assert_eq!(app.diff_scroll, 0);
     }
 
     #[test]
-    fn saved_scroll_is_tracked_separately_per_tree_pane_and_kind() {
+    fn saved_scroll_is_tracked_separately_per_tree_pane_for_patch_only() {
         let mut app = make_test_app();
         for pane in [TreePane::Unstaged, TreePane::Staged] {
             for view_mode in [
@@ -3741,13 +3725,14 @@ mod tests {
             .unwrap();
         assert_eq!(app.diff_scroll, 34);
 
+        // Full file view never remembers scroll, in either pane.
         app.load_diff(
             "shared.txt",
             TreePane::Unstaged,
             DiffViewMode::FullFile(FullFileSource::Previous),
         )
         .unwrap();
-        assert_eq!(app.diff_scroll, 56);
+        assert_eq!(app.diff_scroll, 0);
 
         app.load_diff(
             "shared.txt",
@@ -3755,6 +3740,6 @@ mod tests {
             DiffViewMode::FullFile(FullFileSource::Previous),
         )
         .unwrap();
-        assert_eq!(app.diff_scroll, 78);
+        assert_eq!(app.diff_scroll, 0);
     }
 }
