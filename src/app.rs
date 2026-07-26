@@ -596,6 +596,13 @@ pub struct App {
     pub file_diff: FileDiff,
     pub diff_scroll: usize,
     pub diff_cursor: usize,
+    /// The always-on patch-view cursor: a display-row index into `display_diff` (the same
+    /// row space `diff_scroll` already occupies for patch view), analogous to
+    /// `full_file_cursor` but for `DiffViewMode::Patch`. Distinct from `diff_cursor`, which
+    /// is raw-line-indexed and only meaningful in `Focus::InlineSelect` (partial-patch
+    /// staging always operates on raw diff text, regardless of which tool renders the
+    /// patch pane).
+    pub patch_cursor: usize,
     pub hunk_cursor: usize,
     pub current_file: Option<String>,
     pub line_infos: Vec<DisplayLineInfo>,
@@ -619,7 +626,10 @@ pub struct App {
     diff_cache: HashMap<DiffCacheKey, CachedDiff>,
     diff_cache_order: VecDeque<DiffCacheKey>,
     diff_cache_capacity: usize,
-    diff_scroll_positions: HashMap<DiffScrollKey, usize>,
+    /// Patch view's own remembered (scroll, cursor) per file/pane — restored verbatim on
+    /// return from full-file view, so navigation made while in full-file view never leaks
+    /// back into patch view's own position.
+    diff_scroll_positions: HashMap<DiffScrollKey, (usize, usize)>,
     search_state: Option<SearchState>,
     search_input: Option<SearchInput>,
 
@@ -673,6 +683,7 @@ impl App {
             file_diff: FileDiff::default(),
             diff_scroll: 0,
             diff_cursor: 0,
+            patch_cursor: 0,
             hunk_cursor: 0,
             current_file: None,
             line_infos: Vec::new(),
@@ -1001,16 +1012,16 @@ impl App {
         }
     }
 
-    fn saved_diff_scroll(&self, path: &str, pane: TreePane) -> usize {
+    fn saved_diff_position(&self, path: &str, pane: TreePane) -> (usize, usize) {
         self.diff_scroll_positions
             .get(&self.build_diff_scroll_key(path, pane))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or((0, 0))
     }
 
-    fn remember_diff_scroll(&mut self, path: &str, pane: TreePane, scroll: usize) {
+    fn remember_diff_position(&mut self, path: &str, pane: TreePane, scroll: usize, cursor: usize) {
         self.diff_scroll_positions
-            .insert(self.build_diff_scroll_key(path, pane), scroll);
+            .insert(self.build_diff_scroll_key(path, pane), (scroll, cursor));
     }
 
     /// Full file view never remembers its scroll position: it always opens at the top.
@@ -1019,7 +1030,7 @@ impl App {
             return;
         }
         if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
-            self.remember_diff_scroll(&path, pane, self.diff_scroll);
+            self.remember_diff_position(&path, pane, self.diff_scroll, self.patch_cursor);
         }
     }
 
@@ -1028,8 +1039,14 @@ impl App {
             self.diff_scroll = 0;
             return;
         }
-        let saved = self.saved_diff_scroll(path, pane);
-        self.diff_scroll = saved.min(self.display_line_count.saturating_sub(1));
+        let (saved_scroll, saved_cursor) = self.saved_diff_position(path, pane);
+        self.diff_scroll = saved_scroll.min(self.display_line_count.saturating_sub(1));
+        // Patch view's own cursor is restored independently of scroll — covers a fresh file
+        // selection (both default to 0), a cache hit, and returning from full/previous file
+        // view to patch (same f/F key), all uniformly, since every one of those goes through
+        // `load_diff` and this same restore step. Movement made while in full-file view never
+        // reaches this: `remember_current_diff_scroll` only snapshots patch view's own state.
+        self.patch_cursor = saved_cursor.min(self.display_line_count.saturating_sub(1));
     }
 
     fn touch_diff_cache_key(&mut self, key: DiffCacheKey) {
@@ -1494,6 +1511,7 @@ impl App {
             DiffViewMode::Patch => {
                 let is_untracked = self.has_untracked_file_in_pane(pane, path);
                 let mut force_ansi_rendering = false;
+                let mut patch_content_offset = 0;
                 let (raw, display) = if is_untracked {
                     let preview = crate::git::diff::get_file_preview(path, &self.repo_root)
                         .unwrap_or_else(|_| crate::git::diff::FilePreview {
@@ -1502,6 +1520,7 @@ impl App {
                             content_offset: 0,
                         });
                     force_ansi_rendering = preview.uses_ansi;
+                    patch_content_offset = preview.content_offset;
                     (preview.content.clone(), preview.content)
                 } else if let Some(rev) = self.commit_revision.as_deref() {
                     let raw = crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
@@ -1552,7 +1571,7 @@ impl App {
                     force_ansi_rendering,
                     None,
                     false,
-                    0,
+                    patch_content_offset,
                     Vec::new(),
                 )
             }
@@ -1623,6 +1642,7 @@ impl App {
         if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
             let prev_scroll = self.diff_scroll;
             let prev_cursor = self.diff_cursor;
+            let prev_patch_cursor = self.patch_cursor;
             let view_mode = if self.focus == Focus::InlineSelect {
                 DiffViewMode::Patch
             } else {
@@ -1636,6 +1656,14 @@ impl App {
             };
             self.diff_scroll = prev_scroll.min(scroll_line_count.saturating_sub(1));
             self.diff_cursor = prev_cursor.min(self.raw_line_count.saturating_sub(1));
+            // `load_diff` already reset `patch_cursor` to the top of whichever viewport
+            // `restore_saved_diff_scroll` restored — reconcile it with the pre-reload
+            // cursor the same way `diff_scroll`/`diff_cursor` are reconciled above, so a
+            // refresh doesn't silently snap the patch cursor to an unrelated row.
+            if view_mode == DiffViewMode::Patch {
+                self.patch_cursor =
+                    prev_patch_cursor.min(self.display_line_count.saturating_sub(1));
+            }
         }
         Ok(())
     }
@@ -1730,6 +1758,10 @@ impl App {
                         self.full_file_cursor =
                             self.full_file_cursor.min(line_count.saturating_sub(1));
                         self.full_file_anchor = None;
+                    } else if self.diff_view_mode == DiffViewMode::Patch {
+                        self.patch_cursor = self
+                            .patch_cursor
+                            .min(self.display_line_count.saturating_sub(1));
                     }
                 } else {
                     self.clear_diff();
@@ -2485,7 +2517,7 @@ impl App {
         Ok(())
     }
 
-    /// File line number (1-based) that the patch pane's currently top-displayed row
+    /// File line number (1-based) that the patch pane's cursor row (`patch_cursor`)
     /// corresponds to, on the given full-file `source` side. `None` means no reliable
     /// mapping is available (e.g. above the first hunk, or a display the mapping can't
     /// parse), in which case the caller should leave the full-file view at the top.
@@ -2493,8 +2525,8 @@ impl App {
     /// trailing `\ No newline at end of file` marker maps to one line past that side's
     /// last real line (EOF+1), since the marker itself doesn't consume a file line. Every
     /// current caller clamps the result against `raw_line_count`/`display_line_count`
-    /// before using it (see `full_file_scroll_for_line`), so this is safe today — but a
-    /// future caller that skips that clamp would target a nonexistent line.
+    /// before using it, so this is safe today — but a future caller that skips that clamp
+    /// would target a nonexistent line.
     fn patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
         match self.tool {
             DiffTool::Raw => self.raw_patch_top_line_target(source),
@@ -2503,10 +2535,24 @@ impl App {
         }
     }
 
+    /// Fallback for `patch_top_line_target` on an untracked file: there are no hunks to map
+    /// through at all (`file_diff` is `FileDiff::default()`), but patch view isn't showing a
+    /// diff either — it's `get_file_preview`'s rendering of the file's own content, the same
+    /// content full-file view shows. So the patch cursor's row, minus that rendering's own
+    /// leading decoration (threaded into `full_file_content_offset` for exactly this case by
+    /// `load_diff`), is directly the file line it sits on.
+    fn untracked_patch_line_target(&self, path: &str, pane: TreePane) -> Option<usize> {
+        self.has_untracked_file_in_pane(pane, path).then(|| {
+            self.patch_cursor
+                .saturating_sub(self.full_file_content_offset)
+                + 1
+        })
+    }
+
     /// Exact for `--tool raw`, since `display_diff` is `raw_diff` verbatim there, so
-    /// `diff_scroll` indexes directly into `line_infos` (built from the same raw text).
+    /// `patch_cursor` indexes directly into `line_infos` (built from the same raw text).
     fn raw_patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
-        let info = self.line_infos.get(self.diff_scroll)?;
+        let info = self.line_infos.get(self.patch_cursor)?;
         let hunk = self.file_diff.hunks.get(info.hunk_idx?)?;
 
         let mut old_line = hunk.old_start;
@@ -2538,7 +2584,7 @@ impl App {
     fn delta_patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
         let lines: Vec<&str> = self.display_diff.lines().collect();
         let total = lines.len();
-        let mut row = self.diff_scroll.min(total.checked_sub(1)?);
+        let mut row = self.patch_cursor.min(total.checked_sub(1)?);
 
         // Rows outside any rendered hunk block — delta's leading blank line, the blank
         // gap between hunks, a file banner — don't belong to a file line at all. Skip
@@ -2569,18 +2615,29 @@ impl App {
         None
     }
 
-    /// Scroll offset that places `file_line` (1-based) at the very top of the pane.
-    fn full_file_scroll_for_line(&self, file_line: usize) -> usize {
-        let target_row = self.full_file_content_offset + file_line.saturating_sub(1);
-        target_row.min(self.display_line_count.saturating_sub(1))
-    }
-
     /// Whether the always-on full-file cursor applies right now: full-file view showing
     /// real, copyable content — not patch view, not an "unavailable" placeholder
     /// (binary/unmerged/missing file on the requested side), and not an empty file (no
     /// line for the cursor to sit on).
     pub fn full_file_cursor_active(&self) -> bool {
         self.diff_view_mode.is_full_file() && self.full_file_copyable && self.raw_line_count > 0
+    }
+
+    /// Whether the always-on patch-view cursor applies right now: `Focus::DiffView`
+    /// showing patch content. The focus check also rules out `Focus::InlineSelect`, which
+    /// renders its own cursor over `raw_diff` via `diff_cursor` instead — a different
+    /// (raw-line) row space than `patch_cursor`'s display-row one, so the two must never
+    /// both be active together.
+    ///
+    /// Unlike `full_file_cursor_active` (which doesn't gate on focus at all — full-file
+    /// mode is always reset back to `Patch` before focus can leave the diff pane, so that
+    /// check is never exercised unfocused in practice), patch mode routinely stays active
+    /// while the tree pane merely previews it, so the focus check here is load-bearing:
+    /// without it, an unfocused preview would show a cursor the user never navigated to.
+    pub fn patch_cursor_active(&self) -> bool {
+        self.focus == Focus::DiffView
+            && self.diff_view_mode == DiffViewMode::Patch
+            && self.display_line_count > 0
     }
 
     /// Whether full-file search highlighting must skip past a leading gutter (line number,
@@ -2601,9 +2658,27 @@ impl App {
         };
 
         let next_mode = self.diff_view_mode.toggle_full_file(source);
-        let target_line = (self.diff_view_mode == DiffViewMode::Patch && next_mode.is_full_file())
-            .then(|| self.patch_top_line_target(source))
+        let entering_full_file_from_patch =
+            self.diff_view_mode == DiffViewMode::Patch && next_mode.is_full_file();
+        let target_line = entering_full_file_from_patch
+            .then(|| {
+                self.patch_top_line_target(source)
+                    .or_else(|| self.untracked_patch_line_target(&path, pane))
+            })
             .flatten();
+        // The patch cursor's row *on screen* (relative to the patch pane's own viewport,
+        // not its absolute row in `display_diff`) — full-file view's own viewport is set up
+        // to reproduce this same on-screen offset below, so the switch doesn't itself
+        // relocate the cursor to the top (or bottom) of the pane. Clamped against the
+        // current pane height: `follow_patch_cursor` normally keeps `patch_cursor` inside
+        // the viewport already, but a terminal resize can shrink `diff_pane_height` without
+        // re-clamping it, and an unclamped value here would make `follow_full_file_cursor`
+        // below bottom-align the cursor instead of leaving this positioning alone.
+        let patch_screen_row = entering_full_file_from_patch.then(|| {
+            self.patch_cursor
+                .saturating_sub(self.diff_scroll)
+                .min(self.diff_pane_height.saturating_sub(1))
+        });
         // Switching between FullFile(Current) and FullFile(Previous) (not going through
         // patch view) keeps the same scroll row and cursor line, since both sides render
         // with the same content offset and are almost always line-aligned for a small diff.
@@ -2614,10 +2689,18 @@ impl App {
         self.load_diff(&path, pane, next_mode)?;
 
         if let Some(file_line) = target_line {
-            self.diff_scroll = self.full_file_scroll_for_line(file_line);
             self.full_file_cursor = file_line
                 .saturating_sub(1)
                 .min(self.raw_line_count.saturating_sub(1));
+            // Reproduce the patch cursor's on-screen row: place the viewport so the mapped
+            // line sits at the same offset from the top it had in patch view. Clamped to 0
+            // when there isn't enough content above the target line to fill that offset
+            // (e.g. the target is near the start of the file) — the closest achievable
+            // result, since the viewport can't scroll to a negative row.
+            let display_row = self.full_file_content_offset + self.full_file_cursor;
+            self.diff_scroll = display_row
+                .saturating_sub(patch_screen_row.unwrap_or(0))
+                .min(self.display_line_count.saturating_sub(1));
         } else if let Some(scroll) = preserved_full_file_scroll {
             self.diff_scroll = scroll.min(self.display_line_count.saturating_sub(1));
             self.full_file_cursor = preserved_full_file_cursor
@@ -2692,6 +2775,11 @@ impl App {
                         self.full_file_cursor += 1;
                         self.follow_full_file_cursor();
                     }
+                } else if self.patch_cursor_active() {
+                    if self.patch_cursor + 1 < line_count {
+                        self.patch_cursor += 1;
+                        self.follow_patch_cursor();
+                    }
                 } else if self.diff_scroll + 1 < line_count {
                     self.diff_scroll += 1;
                 }
@@ -2702,6 +2790,11 @@ impl App {
                         self.full_file_cursor -= 1;
                         self.follow_full_file_cursor();
                     }
+                } else if self.patch_cursor_active() {
+                    if self.patch_cursor > 0 {
+                        self.patch_cursor -= 1;
+                        self.follow_patch_cursor();
+                    }
                 } else if self.diff_scroll > 0 {
                     self.diff_scroll -= 1;
                 }
@@ -2711,6 +2804,10 @@ impl App {
                     self.full_file_cursor = (self.full_file_cursor + half_page)
                         .min(self.raw_line_count.saturating_sub(1));
                     self.follow_full_file_cursor();
+                } else if self.patch_cursor_active() {
+                    self.patch_cursor =
+                        (self.patch_cursor + half_page).min(line_count.saturating_sub(1));
+                    self.follow_patch_cursor();
                 } else {
                     self.diff_scroll =
                         (self.diff_scroll + half_page).min(line_count.saturating_sub(1));
@@ -2720,6 +2817,9 @@ impl App {
                 if self.full_file_cursor_active() {
                     self.full_file_cursor = self.full_file_cursor.saturating_sub(half_page);
                     self.follow_full_file_cursor();
+                } else if self.patch_cursor_active() {
+                    self.patch_cursor = self.patch_cursor.saturating_sub(half_page);
+                    self.follow_patch_cursor();
                 } else {
                     self.diff_scroll = self.diff_scroll.saturating_sub(half_page);
                 }
@@ -2730,6 +2830,9 @@ impl App {
                     if self.full_file_cursor_active() {
                         self.full_file_cursor = 0;
                         self.follow_full_file_cursor();
+                    } else if self.patch_cursor_active() {
+                        self.patch_cursor = 0;
+                        self.follow_patch_cursor();
                     } else {
                         self.diff_scroll = 0;
                     }
@@ -2741,6 +2844,9 @@ impl App {
                 if self.full_file_cursor_active() {
                     self.full_file_cursor = self.raw_line_count.saturating_sub(1);
                     self.follow_full_file_cursor();
+                } else if self.patch_cursor_active() {
+                    self.patch_cursor = line_count.saturating_sub(1);
+                    self.follow_patch_cursor();
                 } else {
                     self.diff_scroll = line_count.saturating_sub(1);
                 }
@@ -2786,7 +2892,20 @@ impl App {
                         self.error_message = Some("No hunks to select lines from".to_string());
                     } else {
                         self.focus = Focus::InlineSelect;
-                        self.diff_cursor = self.diff_scroll;
+                        // `patch_cursor` is a display-row index; InlineSelect's `diff_cursor`
+                        // indexes `raw_diff` instead (it always renders raw content,
+                        // regardless of tool). For `--tool raw` those two row spaces are
+                        // identical (display_diff is raw_diff verbatim), so starting from
+                        // the patch cursor is a strict improvement over the viewport top.
+                        // For delta, display rows and raw rows diverge (side-by-side pairs
+                        // two raw lines into one row), so `patch_cursor` isn't a valid raw
+                        // index there — keep today's `diff_scroll`-based start instead of
+                        // landing on an unrelated raw line.
+                        self.diff_cursor = if self.tool == DiffTool::Raw {
+                            self.patch_cursor
+                        } else {
+                            self.diff_scroll
+                        };
                         self.status_message =
                             Some("Inline select: j/k move  u apply  v/h exit".to_string());
                     }
@@ -2842,7 +2961,11 @@ impl App {
                         self.diff_cursor = line_no;
                         self.diff_scroll = line_no;
                     } else {
+                        // Only ever reached from Patch-mode DiffView (full-file view
+                        // guards `]`/`[` out entirely) — keep the always-on patch cursor
+                        // in sync with the jump, not just the viewport.
                         self.diff_scroll = line_no;
+                        self.patch_cursor = line_no;
                     }
                     return;
                 }
@@ -2859,6 +2982,16 @@ impl App {
             self.diff_scroll = display_row;
         } else if display_row >= self.diff_scroll + self.diff_pane_height {
             self.diff_scroll = display_row + 1 - self.diff_pane_height;
+        }
+    }
+
+    /// Same viewport-follow as `follow_full_file_cursor`, for the patch-view cursor —
+    /// `patch_cursor` is already a display row itself, with no content-offset to add.
+    fn follow_patch_cursor(&mut self) {
+        if self.patch_cursor < self.diff_scroll {
+            self.diff_scroll = self.patch_cursor;
+        } else if self.patch_cursor >= self.diff_scroll + self.diff_pane_height {
+            self.diff_scroll = self.patch_cursor + 1 - self.diff_pane_height;
         }
     }
 
@@ -3634,6 +3767,7 @@ mod tests {
             file_diff: FileDiff::default(),
             diff_scroll: 0,
             diff_cursor: 0,
+            patch_cursor: 0,
             hunk_cursor: 0,
             current_file: None,
             line_infos: Vec::new(),
@@ -4200,6 +4334,33 @@ mod tests {
     }
 
     #[test]
+    fn reload_current_diff_preserves_the_patch_cursor_across_a_refresh() {
+        let mut app = make_test_app();
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+
+        app.load_diff("file.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        // Cursor sits deeper in the viewport than the scroll position — reproduces the
+        // bug: `load_diff` (called internally by `reload_current_diff`) remembers and
+        // restores only `diff_scroll` (the viewport top), which would reset
+        // `patch_cursor` back to that same top-of-viewport row if `reload_current_diff`
+        // didn't separately reconcile it against the pre-refresh cursor.
+        app.diff_scroll = 2;
+        app.patch_cursor = 8;
+
+        app.reload_current_diff().unwrap();
+
+        assert_eq!(app.diff_scroll, 2);
+        assert_eq!(app.patch_cursor, 8);
+    }
+
+    #[test]
     fn clear_diff_preserves_saved_scroll_for_patch_but_not_full_file() {
         let mut app = make_test_app();
         seed_cached_view(
@@ -4386,6 +4547,169 @@ mod tests {
     }
 
     #[test]
+    fn patch_cursor_active_requires_diff_view_focus_patch_mode_and_real_content() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.display_line_count = 10;
+        assert!(app.patch_cursor_active());
+
+        // Full-file view has its own cursor mechanism (full_file_cursor_active).
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        assert!(!app.patch_cursor_active());
+
+        // InlineSelect renders its own cursor over raw_diff via diff_cursor instead.
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.focus = Focus::InlineSelect;
+        assert!(!app.patch_cursor_active());
+
+        // The tree pane merely previewing patch content (unfocused) must not show a
+        // cursor the user never navigated to.
+        app.focus = Focus::Unstaged;
+        assert!(!app.patch_cursor_active());
+
+        // No content at all — no line for the cursor to sit on.
+        app.focus = Focus::DiffView;
+        app.display_line_count = 0;
+        assert!(!app.patch_cursor_active());
+    }
+
+    #[test]
+    fn patch_cursor_j_k_move_and_follow_viewport() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.display_line_count = 100;
+        app.diff_pane_height = 5;
+        app.patch_cursor = 0;
+        app.diff_scroll = 0;
+
+        for _ in 0..6 {
+            app.handle_diff_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+                .unwrap();
+        }
+        assert_eq!(app.patch_cursor, 6);
+        assert_eq!(app.diff_scroll, 2);
+
+        for _ in 0..6 {
+            app.handle_diff_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+                .unwrap();
+        }
+        assert_eq!(app.patch_cursor, 0);
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn patch_cursor_ctrl_d_u_jump_by_half_page_and_follow_viewport() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.display_line_count = 100;
+        app.diff_pane_height = 10;
+        app.patch_cursor = 0;
+        app.diff_scroll = 0;
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.patch_cursor, 10);
+        assert_eq!(app.diff_scroll, 1);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .unwrap();
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(app.patch_cursor, 0);
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn patch_cursor_gg_and_shift_g_jump_to_first_and_last_line() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.display_line_count = 50;
+        app.diff_pane_height = 10;
+        app.patch_cursor = 25;
+        app.diff_scroll = 20;
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.patch_cursor, 0);
+        assert_eq!(app.diff_scroll, 0);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.patch_cursor, 49);
+        assert_eq!(app.diff_scroll, 40);
+    }
+
+    #[test]
+    fn patch_cursor_v_starts_inline_select_at_the_cursors_own_line_for_raw_tool() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Raw;
+        app.display_line_count = 20;
+        app.diff_scroll = 2;
+        app.patch_cursor = 7;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n";
+        app.file_diff = parse_diff(raw);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.focus, Focus::InlineSelect);
+        assert_eq!(app.diff_cursor, 7);
+    }
+
+    #[test]
+    fn patch_cursor_v_starts_inline_select_at_the_viewport_top_for_delta_tool() {
+        // Under --tool delta, display rows and raw rows diverge (side-by-side pairs two
+        // raw lines into one row), so patch_cursor (a display-row index) is not a valid
+        // raw_diff index — InlineSelect must keep starting from diff_scroll instead, same
+        // as before the patch cursor existed, rather than landing on an unrelated line.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Delta;
+        app.display_line_count = 20;
+        app.diff_scroll = 2;
+        app.patch_cursor = 7;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n";
+        app.file_diff = parse_diff(raw);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.focus, Focus::InlineSelect);
+        assert_eq!(app.diff_cursor, 2);
+    }
+
+    #[test]
+    fn jump_next_hunk_moves_the_patch_cursor_along_with_the_viewport() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Raw;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new\n@@ -20,2 +20,2 @@\n context2\n-old2\n+new2\n";
+        app.file_diff = parse_diff(raw);
+        app.display_diff = raw.to_string();
+        app.patch_cursor = 0;
+        app.diff_scroll = 0;
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+
+        let second_hunk_row = raw.lines().position(|l| l == "@@ -20,2 +20,2 @@").unwrap();
+        assert_eq!(app.patch_cursor, second_hunk_row);
+        assert_eq!(app.diff_scroll, second_hunk_row);
+    }
+
+    #[test]
     fn raw_patch_top_line_target_maps_context_added_removed_lines() {
         let mut app = make_test_app();
         app.tool = DiffTool::Raw;
@@ -4395,11 +4719,11 @@ mod tests {
         app.line_infos = App::build_patch_line_infos(raw);
 
         // Before the first hunk: no mapping.
-        app.diff_scroll = 0;
+        app.patch_cursor = 0;
         assert_eq!(app.raw_patch_top_line_target(FullFileSource::Current), None);
 
         // The "@@" header row itself maps to the hunk's starting lines.
-        app.diff_scroll = 4;
+        app.patch_cursor = 4;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(12)
@@ -4410,7 +4734,7 @@ mod tests {
         );
 
         // " context1" (first content row) — same as the hunk start.
-        app.diff_scroll = 5;
+        app.patch_cursor = 5;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(12)
@@ -4421,7 +4745,7 @@ mod tests {
         );
 
         // "-removed1" — old side advanced past context1, new side unaffected by the removal.
-        app.diff_scroll = 6;
+        app.patch_cursor = 6;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(13)
@@ -4432,7 +4756,7 @@ mod tests {
         );
 
         // "+added1" — new side advanced past context1, old side unaffected by the addition.
-        app.diff_scroll = 7;
+        app.patch_cursor = 7;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(13)
@@ -4443,7 +4767,7 @@ mod tests {
         );
 
         // " context2" — both sides advanced past the added/removed lines.
-        app.diff_scroll = 8;
+        app.patch_cursor = 8;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(14)
@@ -4467,7 +4791,7 @@ mod tests {
         app.line_infos = App::build_patch_line_infos(raw);
 
         // "-old" — nothing precedes it in the hunk yet.
-        app.diff_scroll = 5;
+        app.patch_cursor = 5;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(1)
@@ -4476,7 +4800,7 @@ mod tests {
         // "+new" — only the preceding "-old" should count; the no-newline marker between
         // them must not add a phantom extra line. Without the fix this maps to file line 2
         // instead of 1.
-        app.diff_scroll = 7;
+        app.patch_cursor = 7;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(1)
@@ -4490,7 +4814,7 @@ mod tests {
         // side's last real line (EOF+1), not a valid file line by itself — correct only
         // because every caller of this helper clamps against `raw_line_count` before use
         // (see `patch_top_line_target`'s doc comment).
-        app.diff_scroll = 6;
+        app.patch_cursor = 6;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(1)
@@ -4503,7 +4827,7 @@ mod tests {
         // The trailing marker row (after "+new") should likewise reflect both sides having
         // advanced past their one real line, not the hunk start — `Some(2)` for both sides
         // is EOF+1 here too, relying on the same caller-side clamp.
-        app.diff_scroll = 8;
+        app.patch_cursor = 8;
         assert_eq!(
             app.raw_patch_top_line_target(FullFileSource::Current),
             Some(2)
@@ -4529,7 +4853,7 @@ mod tests {
         .join("\n");
 
         // A row with numbers on both sides: read directly.
-        app.diff_scroll = 2;
+        app.patch_cursor = 2;
         assert_eq!(
             app.delta_patch_top_line_target(FullFileSource::Current),
             Some(12)
@@ -4542,7 +4866,7 @@ mod tests {
         // The wrapped continuation row (row 4) has blank gutters on both sides; search
         // upward finds row 3's new-side number, and row 2's old-side number (since the
         // addition never had an old-side line at all).
-        app.diff_scroll = 4;
+        app.patch_cursor = 4;
         assert_eq!(
             app.delta_patch_top_line_target(FullFileSource::Current),
             Some(13)
@@ -4558,7 +4882,7 @@ mod tests {
         let mut app = make_test_app();
         app.tool = DiffTool::Delta;
         app.display_diff = "just some diff text\nwithout a parseable gutter".to_string();
-        app.diff_scroll = 1;
+        app.patch_cursor = 1;
 
         assert_eq!(
             app.delta_patch_top_line_target(FullFileSource::Current),
@@ -4576,7 +4900,7 @@ mod tests {
             "│ 19 │use crate::clipboard;              │ 19 │use crate::clipboard;",
         ]
         .join("\n");
-        app.diff_scroll = 0; // sitting on delta's leading blank line
+        app.patch_cursor = 0; // sitting on delta's leading blank line
 
         assert_eq!(
             app.delta_patch_top_line_target(FullFileSource::Current),
@@ -4600,25 +4924,12 @@ mod tests {
             "│ 19 │use crate::clipboard;              │ 19 │use crate::clipboard;",
         ]
         .join("\n");
-        app.diff_scroll = 0;
+        app.patch_cursor = 0;
 
         assert_eq!(
             app.delta_patch_top_line_target(FullFileSource::Current),
             Some(18)
         );
-    }
-
-    #[test]
-    fn full_file_scroll_for_line_positions_at_top_and_clamps() {
-        let mut app = make_test_app();
-        app.full_file_content_offset = 3;
-        app.display_line_count = 200;
-
-        assert_eq!(app.full_file_scroll_for_line(50), 52);
-        assert_eq!(app.full_file_scroll_for_line(1), 3);
-
-        app.display_line_count = 10;
-        assert_eq!(app.full_file_scroll_for_line(1000), 9);
     }
 
     #[test]
@@ -5055,7 +5366,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_full_file_view_positions_scroll_from_patch_top_line_for_raw_tool() {
+    fn toggle_full_file_view_preserves_the_patch_cursors_on_screen_row() {
         let mut app = make_test_app();
         app.tool = DiffTool::Raw;
         app.diff_pane_height = 20;
@@ -5066,10 +5377,14 @@ mod tests {
         app.diff_view_mode = DiffViewMode::Patch;
         app.current_file = Some("file.txt".to_string());
         app.diff_origin = Some(TreePane::Unstaged);
-        app.diff_scroll = 8; // " context2" row -> Current(new) file line 14
+        // Viewport scrolled to the top, cursor sitting 8 rows down the screen at
+        // " context2" (file line 14).
+        app.diff_scroll = 0;
+        app.patch_cursor = 8;
 
         let mut full_cached = make_cached_diff_with_lines(500);
         full_cached.full_file_content_offset = 3;
+        full_cached.full_file_copyable = true;
         let key = app.build_diff_cache_key(
             "file.txt",
             TreePane::Unstaged,
@@ -5083,9 +5398,50 @@ mod tests {
             app.diff_view_mode,
             DiffViewMode::FullFile(FullFileSource::Current)
         );
-        // target_row = content_offset(3) + (file_line 14 - 1) = 16
-        assert_eq!(app.diff_scroll, 16);
         assert_eq!(app.full_file_cursor, 13);
+        // display_row = content_offset(3) + 13 = 16; the viewport is positioned so the
+        // cursor lands on the exact same screen row (8) it had in patch view — not pinned
+        // to the pane's top, and not pushed to its bottom either.
+        assert_eq!(app.diff_scroll, 8);
+        let cursor_screen_row =
+            app.full_file_content_offset + app.full_file_cursor - app.diff_scroll;
+        assert_eq!(cursor_screen_row, 8);
+    }
+
+    #[test]
+    fn toggle_full_file_view_clamps_the_preserved_row_when_the_target_is_near_the_files_start() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Raw;
+        app.diff_pane_height = 20;
+
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context1\n-removed1\n+added1\n context2\n";
+        app.file_diff = parse_diff(raw);
+        app.line_infos = App::build_patch_line_infos(raw);
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.current_file = Some("file.txt".to_string());
+        app.diff_origin = Some(TreePane::Unstaged);
+        // Cursor sits 8 rows down the patch pane, but the mapped target (file line 3) is
+        // near the very start of the file — there isn't enough content above it to push
+        // the viewport down far enough to reproduce that same screen row.
+        app.diff_scroll = 0;
+        app.patch_cursor = 8;
+
+        let mut full_cached = make_cached_diff_with_lines(500);
+        full_cached.full_file_content_offset = 3;
+        full_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, full_cached);
+
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+
+        assert_eq!(app.full_file_cursor, 2);
+        // Best effort: clamped to 0 instead of going negative. The cursor ends up higher on
+        // screen than its ideal preserved row (8) — unavoidable this close to the top.
+        assert_eq!(app.diff_scroll, 0);
     }
 
     #[test]
@@ -5109,6 +5465,89 @@ mod tests {
 
         assert_eq!(app.diff_scroll, 0);
         assert_eq!(app.full_file_cursor, 0);
+    }
+
+    #[test]
+    fn toggle_full_file_view_carries_the_patch_cursor_row_for_an_untracked_file() {
+        let mut app = make_test_app();
+        // An untracked file has no hunks for `patch_top_line_target` to map through — its
+        // patch view is `get_file_preview`'s rendering of the file's own content instead,
+        // so `untracked_patch_line_target` must be the one filling in `target_line`.
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("file.txt".to_string(), '?', '?')],
+        );
+
+        let patch_key =
+            app.build_diff_cache_key("file.txt", TreePane::Unstaged, DiffViewMode::Patch);
+        let mut patch_cached = make_cached_diff_with_lines(30);
+        // Simulates the 3 leading decoration rows `get_file_preview`'s bat rendering added
+        // ahead of the file's own content (separator, `File:` banner, separator).
+        patch_cached.full_file_content_offset = 3;
+        app.insert_cached_diff(patch_key, patch_cached);
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            30,
+        );
+
+        app.load_diff("file.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        // Display row 12 in the patch pane: 3 header rows + file line 10 (0-indexed 9).
+        app.patch_cursor = 12;
+
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        assert_eq!(app.full_file_cursor, 9);
+    }
+
+    #[test]
+    fn clear_diff_remembers_the_departing_files_own_patch_cursor_before_wiping_it() {
+        let mut app = make_test_app();
+        seed_cached_view(
+            &mut app,
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+        seed_cached_view(
+            &mut app,
+            "file-b.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_scroll = 20;
+        app.patch_cursor = 25;
+
+        // `clear_diff` runs while `current_file`/`patch_cursor` still identify file-a — it
+        // must snapshot *that* file's own position, not leave a stale value that could bleed
+        // into whichever file gets remembered next.
+        app.clear_diff();
+        assert_eq!(app.current_file, None);
+
+        app.load_diff("file-b.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        // file-b was never visited before: its own remembered position is (0, 0), untouched
+        // by file-a's leftover scroll/cursor.
+        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.patch_cursor, 0);
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        // Reselecting file-a restores exactly what was remembered for it at `clear_diff` time.
+        assert_eq!(app.diff_scroll, 20);
+        assert_eq!(app.patch_cursor, 25);
     }
 
     #[test]
@@ -5153,6 +5592,52 @@ mod tests {
         );
         assert_eq!(app.diff_scroll, 40);
         assert_eq!(app.full_file_cursor, 12);
+    }
+
+    #[test]
+    fn toggle_full_file_view_reverse_direction_restores_patch_scroll_and_cursor_independently() {
+        let mut app = make_test_app();
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            120,
+        );
+
+        app.load_diff("file.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        // The scenario from the bug report: viewport top still shows row 1 (scroll
+        // untouched), but the cursor itself has moved further down to row 10 — the two
+        // must be remembered independently, not collapsed into one value.
+        app.diff_scroll = 0;
+        app.patch_cursor = 9;
+
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        // Move around within full-file view (e.g. down to row 15) — this must never leak
+        // back into patch view's own remembered position.
+        app.full_file_cursor = 14;
+        app.diff_scroll = 14;
+
+        // Pressing 'f' again (same source) toggles back to patch view.
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+
+        assert_eq!(app.diff_view_mode, DiffViewMode::Patch);
+        // Restored from patch view's own remembered scroll AND cursor — not reverse-mapped
+        // from wherever the full-file cursor ended up, and not collapsed to a single value.
+        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.patch_cursor, 9);
     }
 
     #[test]

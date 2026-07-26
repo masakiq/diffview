@@ -98,6 +98,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     };
     let text = apply_full_file_line_bg(text, app, inner_area.width);
     let text = apply_full_file_cursor(text, app, inner_area.width);
+    let text = apply_patch_cursor(text, app, inner_area.width);
     // Full-file search matches only real file content (App::searchable_lines_for_scope),
     // not bat's line-number gutter or border rows — the highlight must skip those too, or
     // a query that happens to also appear there would visually highlight a "match" `n`/`N`
@@ -270,6 +271,53 @@ fn apply_full_file_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a>
                     })
                     .collect();
             }
+
+            Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans,
+            }
+        })
+        .collect();
+
+    Text {
+        alignment: text.alignment,
+        style: text.style,
+        lines,
+    }
+}
+
+/// Overlays the always-on patch-view cursor: the single display row `app.patch_cursor`
+/// points at gets `FULL_FILE_SELECT_BG` and bold, the same style full-file view's own
+/// cursor uses, so the two read as the same navigation primitive. Unlike
+/// `apply_full_file_cursor`, there's no anchor/range — patch view's `v` key still means
+/// "enter InlineSelect", not "extend a copy range". A no-op unless
+/// `app.patch_cursor_active()` — i.e. outside patch view, or during `Focus::InlineSelect`,
+/// which renders its own cursor over `raw_diff` in `build_raw_diff_text` instead.
+fn apply_patch_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
+    if !app.patch_cursor_active() {
+        return text;
+    }
+
+    let cursor = app.patch_cursor;
+    let width = width as usize;
+
+    let lines = text
+        .lines
+        .into_iter()
+        .enumerate()
+        .map(|(row, line)| {
+            if row != cursor {
+                return line;
+            }
+
+            let spans = tint_line_bg(line.spans, FULL_FILE_SELECT_BG, width)
+                .into_iter()
+                .map(|span| Span {
+                    style: span.style.add_modifier(Modifier::BOLD),
+                    content: span.content,
+                })
+                .collect();
 
             Line {
                 style: line.style,
