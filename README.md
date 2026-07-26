@@ -90,7 +90,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `k` / `↑` | Scroll up one line                                  |
 | `Ctrl+D`  | Scroll down half a page                             |
 | `Ctrl+U`  | Scroll up half a page                               |
-| `g`       | Jump to top                                         |
+| `gg`      | Jump to top                                         |
 | `G`       | Jump to bottom                                      |
 | `c`       | Copy the displayed file path                        |
 | `/`       | Start pane-local search                             |
@@ -99,11 +99,14 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `P`       | Copy the opened full file contents                  |
 | `]`       | Jump to next hunk                                   |
 | `[`       | Jump to previous hunk                               |
-| `v`       | Enter line-select mode                              |
+| `v`       | Patch view: enter line-select mode. Full-file view: start/cancel a line range. |
+| `y`       | Full-file view: copy the selected range (or just the cursor's line) |
 | `C`       | Run the commit command (`git commit -v` by default) |
 
 > `f` is available only in Diff View. The tree-pane preview always stays in patch mode.
-> In full-file view, `v`, `]`, and `[` are unavailable.
+> Full-file view always shows a line cursor over real content; `j`/`k`, `Ctrl+D`/`Ctrl+U`,
+> and `gg`/`G` move it directly instead of just scrolling. `]` and `[` are unavailable there.
+> `v` and `y` are read-only, so they also work over full-file content in Commit Mode.
 > `P` is available only in full-file view and copies the raw file contents.
 > Deleted files show the pre-delete contents when full-file view is available.
 

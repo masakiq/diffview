@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use crate::clipboard;
 use crate::config::Config;
 use crate::git::diff::{parse_diff, DiffLine, FileDiff};
-use crate::git::status::{get_commit_files, get_status};
+use crate::git::status::{get_commit_files, get_status, GitFile};
 
 // ─── Focus ──────────────────────────────────────────────────────────────────
 
@@ -582,6 +582,11 @@ pub struct App {
     // Tree sections
     pub unstaged: TreeSection,
     pub staged: TreeSection,
+    /// New path → pre-rename/copy path, for every file `refresh_trees` currently reports
+    /// with a `previous_path` (status `R`/`C`). A rename/copy's `path` is always the new
+    /// one; looking up its `Previous` content needs the tree/HEAD blob at the old path
+    /// instead, which only ever exists there before the rename.
+    rename_sources: HashMap<String, String>,
 
     // Diff state
     pub diff_origin: Option<TreePane>,
@@ -603,6 +608,10 @@ pub struct App {
     pub full_file_highlight_lines: Vec<u32>,
     pub full_file_cursor: usize,
     pub full_file_anchor: Option<usize>,
+    /// Set by a lone `g` press in `DiffView`, waiting for a second `g` to complete the
+    /// vim-style `gg` jump-to-top. Cleared by any other key, or by leaving/switching the
+    /// diff view.
+    pending_g: bool,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
     pending_tree_preview: Option<PendingTreePreview>,
@@ -656,6 +665,7 @@ impl App {
             pending_action: None,
             unstaged: TreeSection::new(),
             staged: TreeSection::new(),
+            rename_sources: HashMap::new(),
             diff_origin: None,
             diff_view_mode: DiffViewMode::Patch,
             display_diff: String::new(),
@@ -675,6 +685,7 @@ impl App {
             full_file_highlight_lines: Vec::new(),
             full_file_cursor: 0,
             full_file_anchor: None,
+            pending_g: false,
             diff_pane_height: 20,
             diff_pane_width: 0,
             pending_tree_preview: None,
@@ -920,6 +931,7 @@ impl App {
     pub fn refresh_trees(&mut self) -> Result<()> {
         if let Some(rev) = self.commit_revision.as_deref() {
             let files = get_commit_files(rev, &self.repo_root)?;
+            self.rename_sources = build_rename_sources(&files);
             let commit_files: Vec<(String, char, char)> = files
                 .into_iter()
                 .map(|f| (f.path, f.staged, f.unstaged))
@@ -938,6 +950,7 @@ impl App {
         }
 
         let files = get_status(&self.repo_root)?;
+        self.rename_sources = build_rename_sources(&files);
 
         // Split files into unstaged and staged
         let mut unstaged_files: Vec<(String, char, char)> = Vec::new();
@@ -1149,6 +1162,20 @@ impl App {
                     line_in_hunk: None,
                     is_selectable: false,
                 });
+            } else if hunk_idx.is_some() && line.starts_with('\\') {
+                // "\ No newline at end of file" — parse_diff() doesn't store this marker
+                // in Hunk.lines, so it must not consume a line_in_hunk slot: it gets the
+                // *current* counter value (same index the next real row would receive)
+                // without incrementing it, so mapping this row lands on the same file
+                // line the immediately following content resumes at — not reset all the
+                // way back to the hunk's start (which is only correct for the "@@" header
+                // itself). `is_selectable` stays false, so this never becomes a staging
+                // target even though `line_in_hunk` is now `Some`.
+                infos.push(DisplayLineInfo {
+                    hunk_idx,
+                    line_in_hunk: Some(line_in_hunk),
+                    is_selectable: false,
+                });
             } else if hunk_idx.is_some() {
                 let is_sel = line.starts_with('+') || line.starts_with('-');
                 infos.push(DisplayLineInfo {
@@ -1332,7 +1359,9 @@ impl App {
         if let Some(rev) = self.commit_revision.as_deref() {
             let rev_spec = match source {
                 FullFileSource::Current => format!("{}:{}", rev, path),
-                FullFileSource::Previous => format!("{}^:{}", rev, path),
+                FullFileSource::Previous => {
+                    format!("{}^:{}", rev, self.previous_content_path(path))
+                }
             };
             return Ok(FullFileContentTarget::Revision {
                 rev_spec,
@@ -1343,6 +1372,9 @@ impl App {
         match (pane, source) {
             (TreePane::Unstaged, FullFileSource::Current) => Ok(FullFileContentTarget::Worktree),
             (TreePane::Unstaged, FullFileSource::Previous) => Ok(FullFileContentTarget::Revision {
+                // The index already holds a staged rename/copy under its new path (that's
+                // what "staged" means), so unlike the Staged-pane/commit-mode cases below,
+                // no `rename_sources` lookup is needed here.
                 rev_spec: format!(":{}", path),
                 content_annotation,
             }),
@@ -1351,10 +1383,22 @@ impl App {
                 content_annotation: None,
             }),
             (TreePane::Staged, FullFileSource::Previous) => Ok(FullFileContentTarget::Revision {
-                rev_spec: format!("HEAD:{}", path),
+                rev_spec: format!("HEAD:{}", self.previous_content_path(path)),
                 content_annotation,
             }),
         }
+    }
+
+    /// `path` as it existed before a staged/committed rename or copy, or `path` itself when
+    /// there was none. A rename/copy's `path` is always the new one, but `HEAD`/`<rev>^`
+    /// only ever have the file at its old path — `resolve_full_file_content_target`'s two
+    /// `Previous` branches that read from `HEAD`/`<rev>^` (not the index or worktree, which
+    /// already reflect the rename) need this instead of `path` directly.
+    fn previous_content_path<'a>(&'a self, path: &'a str) -> &'a str {
+        self.rename_sources
+            .get(path)
+            .map(String::as_str)
+            .unwrap_or(path)
     }
 
     fn load_full_file_content(
@@ -1704,6 +1748,13 @@ impl App {
     fn searchable_lines_for_scope(&self, scope: SearchScope) -> Vec<String> {
         match scope {
             SearchScope::WorkingTree | SearchScope::CommitTree => Vec::new(),
+            SearchScope::DiffView if self.full_file_cursor_active() => {
+                // Search the raw file content directly rather than the rendered display
+                // text, so matches land only on real content — not bat's border/`File:`/
+                // gutter-number decoration — and match indices are already in the same
+                // raw-line space `full_file_cursor` uses.
+                self.raw_diff.lines().map(str::to_string).collect()
+            }
             SearchScope::DiffView => {
                 if let Some(text) = &self.cached_display_text {
                     text.lines
@@ -1771,8 +1822,11 @@ impl App {
                     .flat_map(|&pane| {
                         self.tree(pane).all_nodes.iter().enumerate().filter_map(
                             move |(node_idx, node)| {
-                                contains_ignore_case(&node.display_row_text(pane), query)
-                                    .then_some(self.tree_linear_position(pane, node_idx))
+                                crate::ui::highlight::contains_match(
+                                    &node.display_row_text(pane),
+                                    query,
+                                )
+                                .then_some(self.tree_linear_position(pane, node_idx))
                             },
                         )
                     })
@@ -1782,7 +1836,9 @@ impl App {
                 .searchable_lines_for_scope(scope)
                 .into_iter()
                 .enumerate()
-                .filter_map(|(idx, line)| contains_ignore_case(&line, query).then_some(idx))
+                .filter_map(|(idx, line)| {
+                    crate::ui::highlight::contains_match(&line, query).then_some(idx)
+                })
                 .collect(),
         }
     }
@@ -1797,6 +1853,7 @@ impl App {
                 let current_node_idx = tree.visible.get(tree.cursor).copied().unwrap_or(0);
                 self.tree_linear_position(pane, current_node_idx)
             }
+            SearchScope::DiffView if self.full_file_cursor_active() => self.full_file_cursor,
             SearchScope::DiffView => self.diff_scroll,
             SearchScope::InlineSelect => self.diff_cursor,
         }
@@ -1812,13 +1869,15 @@ impl App {
                 self.tree_mut(pane).reveal_node(node_idx);
                 self.schedule_tree_preview(pane);
             }
+            SearchScope::DiffView if self.full_file_cursor_active() => {
+                // `target` is a raw-line index here (searchable_lines_for_scope searched
+                // raw_diff directly), so move the cursor and let the existing
+                // viewport-follow helper derive the scroll position from it.
+                self.full_file_cursor = target.min(self.raw_line_count.saturating_sub(1));
+                self.follow_full_file_cursor();
+            }
             SearchScope::DiffView => {
                 self.diff_scroll = target.min(self.display_line_count.saturating_sub(1));
-                if self.full_file_cursor_active() {
-                    self.full_file_cursor = target
-                        .saturating_sub(self.full_file_content_offset)
-                        .min(self.raw_line_count.saturating_sub(1));
-                }
             }
             SearchScope::InlineSelect => {
                 self.diff_cursor = target.min(self.raw_line_count.saturating_sub(1));
@@ -2030,6 +2089,15 @@ impl App {
     // ─── Key handling ────────────────────────────────────────────────────
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Clears the `gg` pending state on any key that isn't a plain `g` press, even one
+        // that never reaches `handle_diff_key` (global refresh, search input, other panes) —
+        // a lone `g` followed by an unrelated key (including a modified `Ctrl+g`/`Alt+g`,
+        // e.g. a `commit.key = "ctrl-g"` binding) must not let a later `g` complete a stale
+        // sequence.
+        if !is_plain_g(key) {
+            self.pending_g = false;
+        }
+
         if self.search_input.is_some() {
             return self.handle_search_input_key(key);
         }
@@ -2421,6 +2489,12 @@ impl App {
     /// corresponds to, on the given full-file `source` side. `None` means no reliable
     /// mapping is available (e.g. above the first hunk, or a display the mapping can't
     /// parse), in which case the caller should leave the full-file view at the top.
+    /// Not guaranteed to be within the file's actual line range: a row sitting on a
+    /// trailing `\ No newline at end of file` marker maps to one line past that side's
+    /// last real line (EOF+1), since the marker itself doesn't consume a file line. Every
+    /// current caller clamps the result against `raw_line_count`/`display_line_count`
+    /// before using it (see `full_file_scroll_for_line`), so this is safe today — but a
+    /// future caller that skips that clamp would target a nonexistent line.
     fn patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
         match self.tool {
             DiffTool::Raw => self.raw_patch_top_line_target(source),
@@ -2502,13 +2576,26 @@ impl App {
     }
 
     /// Whether the always-on full-file cursor applies right now: full-file view showing
-    /// real, copyable content — not patch view, and not an "unavailable" placeholder
-    /// (binary/unmerged/missing file on the requested side).
+    /// real, copyable content — not patch view, not an "unavailable" placeholder
+    /// (binary/unmerged/missing file on the requested side), and not an empty file (no
+    /// line for the cursor to sit on).
     pub fn full_file_cursor_active(&self) -> bool {
-        self.diff_view_mode.is_full_file() && self.full_file_copyable
+        self.diff_view_mode.is_full_file() && self.full_file_copyable && self.raw_line_count > 0
+    }
+
+    /// Whether full-file search highlighting must skip past a leading gutter (line number,
+    /// `│` separator) instead of highlighting from column 0. Only true when `bat` actually
+    /// rendered its forced style (`full_file_content_offset > 0`, see `FULL_FILE_VIEW_BAT_STYLE`
+    /// in `git/diff.rs`) — on the `cat`/plain-text fallback (`content_offset == 0`) the displayed
+    /// rows are the raw content verbatim with no gutter to skip, so the ordinary highlighter is
+    /// correct there; the gutter-aware one would instead use each row's own length as its match
+    /// floor (no `│` anywhere) and silently suppress every highlight.
+    pub fn full_file_search_highlight_uses_gutter(&self) -> bool {
+        self.full_file_cursor_active() && self.full_file_content_offset > 0
     }
 
     fn toggle_full_file_view(&mut self, source: FullFileSource) -> Result<()> {
+        self.pending_g = false;
         let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) else {
             return Ok(());
         };
@@ -2539,6 +2626,16 @@ impl App {
         } else if next_mode.is_full_file() {
             self.full_file_cursor = 0;
         }
+        if self.full_file_cursor_active() {
+            // The scroll and cursor above are clamped independently against the new
+            // file's (possibly much shorter) line counts, which can leave the cursor's
+            // display row outside the clamped scroll window — pull the viewport back to
+            // the cursor so it's never left off-screen after the switch. Skipped when
+            // there's no real cursor to keep visible (binary/unmerged/missing/empty),
+            // so switching into an unavailable placeholder doesn't yank the scroll to a
+            // stale cursor position.
+            self.follow_full_file_cursor();
+        }
         // A range never survives a side switch, or a drop back into patch view.
         self.full_file_anchor = None;
 
@@ -2550,6 +2647,7 @@ impl App {
     }
 
     fn leave_diff_view_to_tree(&mut self) -> Result<()> {
+        self.pending_g = false;
         let target_focus = self
             .diff_origin
             .map(|p| p.to_focus())
@@ -2574,6 +2672,10 @@ impl App {
         let line_count = self.display_line_count;
         let half_page = (self.diff_pane_height / 2).max(1);
         let is_full_file_view = self.diff_view_mode.is_full_file();
+
+        if !is_plain_g(key) {
+            self.pending_g = false;
+        }
 
         if self.can_trigger_commit_action(key) {
             self.pending_action = Some(ExternalAction::Commit);
@@ -2622,12 +2724,17 @@ impl App {
                     self.diff_scroll = self.diff_scroll.saturating_sub(half_page);
                 }
             }
-            KeyCode::Char('g') => {
-                if self.full_file_cursor_active() {
-                    self.full_file_cursor = 0;
-                    self.follow_full_file_cursor();
+            KeyCode::Char('g') if is_plain_g(key) => {
+                if self.pending_g {
+                    self.pending_g = false;
+                    if self.full_file_cursor_active() {
+                        self.full_file_cursor = 0;
+                        self.follow_full_file_cursor();
+                    } else {
+                        self.diff_scroll = 0;
+                    }
                 } else {
-                    self.diff_scroll = 0;
+                    self.pending_g = true;
                 }
             }
             KeyCode::Char('G') => {
@@ -2689,7 +2796,7 @@ impl App {
                 }
             }
             KeyCode::Char('y') if is_full_file_view => {
-                if self.full_file_copyable {
+                if self.full_file_cursor_active() {
                     self.copy_full_file_selection();
                 } else {
                     self.error_message = Some("No content to copy".to_string());
@@ -2756,8 +2863,9 @@ impl App {
     }
 
     /// Raw lines covered by the active selection (or just the cursor's own line when
-    /// no range is active), joined with a trailing newline — matching `P`'s whole-file
-    /// copy, which copies `raw_diff` verbatim and so also ends in a newline.
+    /// no range is active), joined and always ending in a trailing newline — unlike `P`'s
+    /// whole-file copy, which copies `raw_diff` verbatim and so omits the trailing newline
+    /// for a file that doesn't have one.
     fn full_file_selection_text(&self) -> String {
         let (lo, hi) = self.full_file_selection_range();
         let mut text = self
@@ -2982,6 +3090,20 @@ fn rebuild_section_visible(section: &mut TreeSection) {
     section.clamp_cursor();
 }
 
+/// New path → pre-rename/copy path, for every `GitFile` that reports one. See
+/// `App::rename_sources`'s doc comment for why `resolve_full_file_content_target` needs
+/// this instead of just the (post-rename) `path` every other lookup uses.
+fn build_rename_sources(files: &[GitFile]) -> HashMap<String, String> {
+    files
+        .iter()
+        .filter_map(|f| {
+            f.previous_path
+                .as_ref()
+                .map(|prev| (f.path.clone(), prev.clone()))
+        })
+        .collect()
+}
+
 /// Build tree nodes from a list of (path, staged, unstaged) tuples.
 /// Preserves existing expansion states from `target_nodes`.
 fn build_section(target_nodes: &mut Vec<TreeNode>, files: &[(String, char, char)]) {
@@ -3080,8 +3202,16 @@ fn build_section(target_nodes: &mut Vec<TreeNode>, files: &[(String, char, char)
     *target_nodes = nodes;
 }
 
-fn contains_ignore_case(text: &str, query: &str) -> bool {
-    text.to_lowercase().contains(&query.to_lowercase())
+/// Whether `key` is an unmodified `g` press — the only input that may arm or complete the
+/// `gg` jump-to-top sequence. `Ctrl+g`/`Alt+g` share `KeyCode::Char('g')` but are a different
+/// keystroke entirely (e.g. a configurable `commit.key = "ctrl-g"` binding): they must neither
+/// complete a pending sequence as if they were a second plain `g`, nor leave one armed for a
+/// later unrelated `g` to complete.
+fn is_plain_g(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('g')
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
 /// Strips ANSI CSI sequences (e.g. `\x1b[38;2;255;0;0m`) so delta's colored output can be
@@ -3291,13 +3421,6 @@ mod tests {
     }
 
     #[test]
-    fn contains_ignore_case_matches_mixed_case() {
-        assert!(contains_ignore_case("src/FooBar.rs", "foobar"));
-        assert!(contains_ignore_case("src/FooBar.rs", "FOO"));
-        assert!(!contains_ignore_case("src/FooBar.rs", "baz"));
-    }
-
-    #[test]
     fn reveal_node_expands_hidden_file_path() {
         let mut nodes = Vec::new();
         build_section(&mut nodes, &[("src/nested/file.txt".to_string(), 'M', 'M')]);
@@ -3357,6 +3480,29 @@ mod tests {
             section.current_node().unwrap().path,
             Path::new("src/nested/a.txt")
         );
+    }
+
+    #[test]
+    fn build_rename_sources_maps_new_path_to_old_path_and_skips_non_renames() {
+        let files = vec![
+            GitFile {
+                path: "new.rs".to_string(),
+                previous_path: Some("old.rs".to_string()),
+                staged: 'R',
+                unstaged: 'R',
+            },
+            GitFile {
+                path: "unrelated.rs".to_string(),
+                previous_path: None,
+                staged: 'M',
+                unstaged: 'M',
+            },
+        ];
+
+        let sources = build_rename_sources(&files);
+
+        assert_eq!(sources.get("new.rs").map(String::as_str), Some("old.rs"));
+        assert_eq!(sources.get("unrelated.rs"), None);
     }
 
     #[test]
@@ -3480,6 +3626,7 @@ mod tests {
             pending_action: None,
             unstaged: TreeSection::new(),
             staged: TreeSection::new(),
+            rename_sources: HashMap::new(),
             diff_origin: None,
             diff_view_mode: DiffViewMode::Patch,
             display_diff: String::new(),
@@ -3499,6 +3646,7 @@ mod tests {
             full_file_highlight_lines: Vec::new(),
             full_file_cursor: 0,
             full_file_anchor: None,
+            pending_g: false,
             diff_pane_height: 20,
             diff_pane_width: 80,
             pending_tree_preview: None,
@@ -3768,6 +3916,78 @@ mod tests {
             Ok(FullFileContentTarget::Revision {
                 rev_spec: "deadbeef^:gone.txt".to_string(),
                 content_annotation: Some(ContentAnnotation::BeforeDelete),
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_full_file_target_uses_previous_path_for_renamed_files() {
+        let mut app = make_test_app();
+        app.rename_sources
+            .insert("new.rs".to_string(), "old.rs".to_string());
+        let renamed = FileSelectionState {
+            status: 'R',
+            is_unmerged: false,
+            is_untracked: false,
+        };
+
+        // Staged/Previous reads from HEAD, which only has the file under its old path.
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "new.rs",
+                TreePane::Staged,
+                renamed,
+                FullFileSource::Previous,
+            ),
+            Ok(FullFileContentTarget::Revision {
+                rev_spec: "HEAD:old.rs".to_string(),
+                content_annotation: None,
+            })
+        );
+
+        // Unstaged/Previous reads from the index, which already has the rename staged
+        // under the new path — no rename_sources lookup needed, unlike the Staged case.
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "new.rs",
+                TreePane::Unstaged,
+                renamed,
+                FullFileSource::Previous,
+            ),
+            Ok(FullFileContentTarget::Revision {
+                rev_spec: ":new.rs".to_string(),
+                content_annotation: None,
+            })
+        );
+
+        // Current always reads from wherever the file lives today (the new path) on
+        // both sides — a rename never changes that.
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "new.rs",
+                TreePane::Staged,
+                renamed,
+                FullFileSource::Current,
+            ),
+            Ok(FullFileContentTarget::Revision {
+                rev_spec: ":new.rs".to_string(),
+                content_annotation: None,
+            })
+        );
+
+        // Commit mode's Previous reads from the parent commit, which also only has the
+        // file under its old path.
+        app.commit_revision = Some("deadbeef".to_string());
+        assert_eq!(
+            app.resolve_full_file_content_target(
+                "new.rs",
+                TreePane::Unstaged,
+                renamed,
+                FullFileSource::Previous,
+            ),
+            Ok(FullFileContentTarget::Revision {
+                rev_spec: "deadbeef^:old.rs".to_string(),
+                content_annotation: None,
             })
         );
     }
@@ -4235,6 +4455,66 @@ mod tests {
     }
 
     #[test]
+    fn raw_patch_top_line_target_skips_no_newline_markers_when_counting_hunk_lines() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Raw;
+
+        // A one-line file with no trailing newline, changed on both sides: parse_diff()
+        // never stores the "\ No newline..." marker rows in Hunk.lines, so counting them
+        // as if they were real hunk lines would shift every row after the first marker.
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n";
+        app.file_diff = parse_diff(raw);
+        app.line_infos = App::build_patch_line_infos(raw);
+
+        // "-old" — nothing precedes it in the hunk yet.
+        app.diff_scroll = 5;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(1)
+        );
+
+        // "+new" — only the preceding "-old" should count; the no-newline marker between
+        // them must not add a phantom extra line. Without the fix this maps to file line 2
+        // instead of 1.
+        app.diff_scroll = 7;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(1)
+        );
+
+        // The marker row itself (right after "-old") should map the same as the real
+        // content it sits next to — old side advanced past "old", new side hasn't reached
+        // "new" yet — not reset all the way back to the hunk's start line (1). Only the
+        // Previous side (old_line) actually differs from the buggy hunk-start value here.
+        // Note this file has exactly one line: `Some(2)` for Previous is one past that
+        // side's last real line (EOF+1), not a valid file line by itself — correct only
+        // because every caller of this helper clamps against `raw_line_count` before use
+        // (see `patch_top_line_target`'s doc comment).
+        app.diff_scroll = 6;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(1)
+        );
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Previous),
+            Some(2)
+        );
+
+        // The trailing marker row (after "+new") should likewise reflect both sides having
+        // advanced past their one real line, not the hunk start — `Some(2)` for both sides
+        // is EOF+1 here too, relying on the same caller-side clamp.
+        app.diff_scroll = 8;
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Current),
+            Some(2)
+        );
+        assert_eq!(
+            app.raw_patch_top_line_target(FullFileSource::Previous),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn delta_patch_top_line_target_finds_nearest_gutter_number_above_blank_rows() {
         let mut app = make_test_app();
         app.tool = DiffTool::Delta;
@@ -4344,6 +4624,7 @@ mod tests {
     #[test]
     fn full_file_cursor_active_requires_full_file_mode_and_copyable_content() {
         let mut app = make_test_app();
+        app.raw_line_count = 10;
 
         app.diff_view_mode = DiffViewMode::Patch;
         app.full_file_copyable = true;
@@ -4355,6 +4636,30 @@ mod tests {
 
         app.full_file_copyable = true;
         assert!(app.full_file_cursor_active());
+
+        // An empty file/blob has no line for the cursor to sit on.
+        app.raw_line_count = 0;
+        assert!(!app.full_file_cursor_active());
+    }
+
+    #[test]
+    fn full_file_search_highlight_uses_gutter_requires_a_nonzero_content_offset() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 10;
+
+        // bat's cat/plain-text fallback: no gutter was ever rendered.
+        app.full_file_content_offset = 0;
+        assert!(!app.full_file_search_highlight_uses_gutter());
+
+        // bat rendered its forced style: a real gutter is on screen.
+        app.full_file_content_offset = 1;
+        assert!(app.full_file_search_highlight_uses_gutter());
+
+        // Outside full-file view entirely, it's irrelevant regardless of the offset.
+        app.diff_view_mode = DiffViewMode::Patch;
+        assert!(!app.full_file_search_highlight_uses_gutter());
     }
 
     #[test]
@@ -4418,6 +4723,28 @@ mod tests {
             Some("Line selection unavailable in full file view")
         );
         assert_eq!(app.full_file_anchor, None);
+
+        app.error_message = None;
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.error_message.as_deref(), Some("No content to copy"));
+    }
+
+    #[test]
+    fn full_file_v_and_y_fall_back_to_unavailable_messages_for_an_empty_file() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        // Copyable content, but there's no line for the cursor to sit on.
+        app.full_file_copyable = true;
+        app.raw_line_count = 0;
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Line selection unavailable in full file view")
+        );
 
         app.error_message = None;
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
@@ -4495,7 +4822,7 @@ mod tests {
     }
 
     #[test]
-    fn full_file_select_g_and_shift_g_jump_to_first_and_last_line() {
+    fn full_file_select_gg_and_shift_g_jump_to_first_and_last_line() {
         let mut app = make_test_app();
         app.focus = Focus::DiffView;
         app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
@@ -4507,6 +4834,8 @@ mod tests {
         app.diff_scroll = 20;
         app.full_file_anchor = Some(5);
 
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.full_file_cursor, 0);
@@ -4521,16 +4850,168 @@ mod tests {
     }
 
     #[test]
-    fn full_file_select_n_and_shift_n_move_cursor_and_scroll_to_search_matches() {
+    fn full_file_lone_g_does_not_jump_and_clears_on_other_key() {
         let mut app = make_test_app();
         app.focus = Focus::DiffView;
         app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         app.full_file_copyable = true;
-        // Rows 0-2 stand in for bat's header decoration; content starts at row 3.
-        app.display_diff = "header1\nheader2\nheader3\nalpha\nneedle\ngamma\n".to_string();
+        app.raw_line_count = 50;
+        app.full_file_content_offset = 3;
+        app.diff_pane_height = 10;
+        app.full_file_cursor = 25;
+        app.diff_scroll = 20;
+
+        // A single 'g' only arms the pending state; it does not jump by itself.
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_cursor, 25);
+        assert!(app.pending_g);
+
+        // Any other key clears the pending state, so a later lone 'g' doesn't complete a
+        // stale sequence.
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.pending_g);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_cursor, 26);
+        assert!(app.pending_g);
+    }
+
+    #[test]
+    fn full_file_modified_g_does_not_complete_or_arm_a_pending_sequence() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 50;
+        app.full_file_cursor = 25;
+
+        // A lone 'g' arms the pending state...
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.pending_g);
+
+        // ...but Alt+g is a different keystroke, not a second plain 'g': it must not
+        // complete the jump, and it clears the stale pending state like any other key.
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT))
+            .unwrap();
+        assert_eq!(app.full_file_cursor, 25);
+        assert!(!app.pending_g);
+
+        // Ctrl+g must not arm a pending sequence either.
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!app.pending_g);
+    }
+
+    #[test]
+    fn ctrl_g_commit_binding_does_not_leave_a_stale_pending_g_for_the_next_plain_g() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 50;
+        app.full_file_cursor = 25;
+        // A user who rebinds the commit action onto Ctrl+g — plausible, since 'g' is
+        // otherwise unmodified in this pane.
+        app.commit_key = KeyBinding::parse("ctrl-g").unwrap();
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.pending_g);
+
+        // Ctrl+g triggers the commit action (an early return in handle_diff_key, before
+        // the match statement) — without the fix this bypassed the reset entirely and
+        // left pending_g armed for whatever unrelated 'g' the user pressed next.
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!app.pending_g);
+        assert_eq!(app.pending_action, Some(ExternalAction::Commit));
+
+        app.pending_action = None;
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_cursor, 25);
+        assert!(app.pending_g);
+    }
+
+    #[test]
+    fn ctrl_g_commit_binding_clears_pending_g_through_the_real_handle_key_entry_point() {
+        // Same scenario as `ctrl_g_commit_binding_does_not_leave_a_stale_pending_g_for_the_next_plain_g`,
+        // but driven through `handle_key` — the actual entry point every real keystroke
+        // takes, which also runs its own `is_plain_g` reset and the `r`-refresh branch
+        // before dispatching to `handle_diff_key`. Confirms nothing on that path re-arms
+        // or otherwise disagrees with `handle_diff_key`'s own handling of `Ctrl+g`.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 50;
+        app.full_file_cursor = 25;
+        app.commit_key = KeyBinding::parse("ctrl-g").unwrap();
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.pending_g);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert!(!app.pending_g);
+        assert_eq!(app.pending_action, Some(ExternalAction::Commit));
+
+        app.pending_action = None;
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.full_file_cursor, 25);
+        assert!(app.pending_g);
+    }
+
+    #[test]
+    fn pending_g_is_cleared_by_global_refresh_even_though_it_bypasses_handle_diff_key() {
+        let mut app = make_test_app();
+        // `refresh_latest_state()` shells out to `git status`, which needs a real
+        // directory as its cwd.
+        app.repo_root = std::env::current_dir().unwrap();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 50;
+        // No current_file/diff_origin, so the 'r' refresh below takes the harmless
+        // clear_diff() path instead of attempting a real git reload.
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.pending_g);
+
+        // `r` (global refresh) is intercepted in handle_key() before the Focus dispatch
+        // that would otherwise clear pending_g inside handle_diff_key — it must still
+        // clear it, or a later unrelated 'g' would silently complete a stale "gg".
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.pending_g);
+
+        // A lone 'g' after the refresh only re-arms; it must not jump immediately.
+        app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.pending_g);
+    }
+
+    #[test]
+    fn full_file_select_n_and_shift_n_move_cursor_to_raw_content_matches_only() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_diff = "alpha\nneedle\ngamma".to_string();
+        app.raw_line_count = 3;
+        // The decoration text also contains the query — if search still searched this
+        // instead of raw_diff, it would find a second (bogus) match here.
+        app.display_diff = "header1\nneedle-in-header\nheader3\nalpha\nneedle\ngamma\n".to_string();
         app.display_line_count = 6;
         app.full_file_content_offset = 3;
-        app.raw_line_count = 3;
+        app.diff_pane_height = 2;
         app.diff_scroll = 3;
         app.full_file_cursor = 0;
         app.search_state = Some(SearchState {
@@ -4540,14 +5021,37 @@ mod tests {
 
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
             .unwrap();
-        assert_eq!(app.diff_scroll, 4);
         assert_eq!(app.full_file_cursor, 1);
+        // The match (display row 4) is already inside the current viewport
+        // ([3, 5)), so the pane doesn't need to scroll to keep it visible.
+        assert_eq!(app.diff_scroll, 3);
 
-        // Only one match exists, so N wraps back to the same one rather than erroring.
+        // Only one real match exists (the decoration-text one is excluded), so N wraps
+        // back to the same one rather than finding the bogus header match.
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE))
             .unwrap();
-        assert_eq!(app.diff_scroll, 4);
         assert_eq!(app.full_file_cursor, 1);
+        assert_eq!(app.diff_scroll, 3);
+    }
+
+    #[test]
+    fn full_file_search_position_and_target_use_the_cursor_not_the_scroll() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 10;
+
+        // Cursor sits mid-viewport, away from the (unmoved) top of the pane.
+        app.full_file_cursor = 5;
+        app.diff_scroll = 3;
+        assert_eq!(
+            app.current_search_position(SearchScope::DiffView),
+            app.full_file_cursor
+        );
+
+        app.apply_search_target(SearchScope::DiffView, 7);
+        assert_eq!(app.full_file_cursor, 7);
     }
 
     #[test]
@@ -4672,5 +5176,59 @@ mod tests {
 
         assert_eq!(app.diff_scroll, 9);
         assert_eq!(app.full_file_cursor, 9);
+    }
+
+    #[test]
+    fn toggle_full_file_view_keeps_cursor_visible_when_switching_into_a_shorter_file() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.current_file = Some("file.txt".to_string());
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.diff_pane_height = 10;
+        app.full_file_content_offset = 3;
+        app.full_file_copyable = true;
+        app.raw_line_count = 100;
+        // Cursor pinned near the bottom of a long file (as `G` would leave it).
+        app.diff_scroll = 93;
+        app.full_file_cursor = 99;
+
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+        );
+        app.insert_cached_diff(
+            key,
+            CachedDiff {
+                raw_diff: (0..10)
+                    .map(|idx| format!("line {}", idx))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                display_diff: String::new(),
+                file_diff: FileDiff::default(),
+                line_infos: Vec::new(),
+                display_line_count: 14, // 3-row header + 10 content rows + 1 footer row
+                raw_line_count: 10,
+                cached_display_text: None,
+                content_annotation: None,
+                full_file_copyable: true,
+                full_file_content_offset: 3,
+                full_file_highlight_lines: Vec::new(),
+            },
+        );
+
+        app.toggle_full_file_view(FullFileSource::Previous).unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Previous)
+        );
+        // Clamped to the shorter file's last line.
+        assert_eq!(app.full_file_cursor, 9);
+        // The cursor's display row must stay inside the viewport `diff_scroll` defines,
+        // not end up above it (as it would without reconciling scroll to the cursor).
+        let cursor_display_row = app.full_file_content_offset + app.full_file_cursor;
+        assert!(app.diff_scroll <= cursor_display_row);
+        assert!(cursor_display_row < app.diff_scroll + app.diff_pane_height);
     }
 }

@@ -141,7 +141,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Move up 5 lines | `Ctrl-u` | Unstaged, Staged | Fixed 5-line step in the Tree Pane |
 | Scroll down half page | `Ctrl-d` | DiffView, InlineSelect | Scrolls half the pane height. In full-file view, moves the cursor by a half page instead (the pane follows). |
 | Scroll up half page | `Ctrl-u` | DiffView, InlineSelect | Scrolls half the pane height. In full-file view, moves the cursor by a half page instead (the pane follows). |
-| Jump to top of diff | `g` | DiffView | In full-file view, moves the cursor to the first file line instead of just scrolling. |
+| Jump to top of diff | `gg` | DiffView | Vim-style two-key press. In full-file view, moves the cursor to the first file line instead of just scrolling. |
 | Jump to bottom of diff | `G` | DiffView | In full-file view, moves the cursor to the last file line instead of just scrolling. |
 | Jump to next hunk | `]` | DiffView, InlineSelect | Available only in patch view. |
 | Jump to previous hunk | `[` | DiffView, InlineSelect | Available only in patch view. |
@@ -182,14 +182,14 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Toggle previous-side full file | `F` | Available in DiffView only. Switches between patch view and the previous side of the selected file. |
 | Copy opened full file | `P` | Available only in full-file view in DiffView. Copies the opened file contents to the clipboard. |
 | Start / cancel line range | `v` | Available only in full-file view in DiffView. First press marks the cursor's current line as the start of a range; pressing `v` again while a range is active cancels it (back to a single-line cursor). |
-| Copy selected line(s) | `y` | Available only in full-file view in DiffView. Copies the active range to the clipboard, or just the cursor's line if no range is active. Copied text always ends in a newline, matching whole-file copy (`P`). |
+| Copy selected line(s) | `y` | Available only in full-file view in DiffView. Copies the active range to the clipboard, or just the cursor's line if no range is active. Copied text always ends in a newline — unlike `P`, which copies the raw file verbatim and so omits the trailing newline for a file that doesn't have one. |
 
 Full-file view rules:
 
 - While the tree pane is focused, the right pane always stays in patch preview mode. `f` and `F` have no effect there.
 - `[` and `]` are available only in patch view (not full-file view). `v` is available in both, but means something different in each: in patch view it enters InlineSelect for staging; in full-file view it starts/cancels a line range for copying (see below) — it never enters a separate focus.
 - `P` works in either full-file view and copies the raw contents of the currently displayed file.
-- Full-file view always shows a line cursor over real content (not shown over an "unavailable" placeholder such as a binary/unmerged/missing file). `j`/`k`, `Ctrl-d`/`Ctrl-u`, and `g`/`G` move this cursor directly instead of just scrolling the pane, which follows along to keep the cursor visible. The cursor's own line gets a `DarkGray` background extended to the full pane width; within an active range (`v`), every line in the range gets the same tint, with the exact cursor line additionally bolded. This overlays (and takes precedence over) the added/removed diff tint described below.
+- Full-file view always shows a line cursor over real content (not shown over an "unavailable" placeholder such as a binary/unmerged/missing file). `j`/`k`, `Ctrl-d`/`Ctrl-u`, and `gg`/`G` move this cursor directly instead of just scrolling the pane, which follows along to keep the cursor visible. The cursor's own line gets a `DarkGray` background extended to the full pane width; within an active range (`v`), every line in the range gets the same tint, with the exact cursor line additionally bolded. This overlays (and takes precedence over) the added/removed diff tint described below.
 - `/`, `n`, and `N` search full-file content exactly as they do in patch view; moving to a match moves the cursor there too, not just the pane.
 - Patch-view scroll position is remembered per file. Full-file view does not remember scroll position across visits — instead, every time you switch from patch view to full-file view (`f`/`F` while in patch view), the opening scroll position (and cursor line) is derived fresh from the patch pane's top-displayed line:
   - `--tool raw`: exact — the patch pane's top line maps precisely to a file line via the parsed hunk data.
@@ -197,7 +197,7 @@ Full-file view rules:
   - `--tool difftastic`: always opens at the top — difftastic's structural diff has no parseable line-number correspondence.
   - In all cases, the mapped line is positioned at the very top of the pane.
 - Switching between `FullFile(Current)` and `FullFile(Previous)` while already in full-file view (`f`/`F` pressed there, not from patch view) keeps the current scroll row and cursor line as-is instead of recomputing from the patch pane — both directions (`f`→`F` and `F`→`f`) preserve it. Any active range is cleared on the switch.
-- Lines the underlying diff marks as changed get a background tint, independent of `--tool` (full-file content is always rendered through `bat`, not the selected diff tool): the current-side view (`f`) tints added lines dark green, the previous-side view (`F`) tints removed lines dark red. Syntax-highlighted foreground colors are preserved; only the background changes. Unchanged files, or a source where the diff has no hunks to show (e.g. an untracked file), have no tinted lines.
+- Lines the underlying diff marks as changed get a background tint, independent of `--tool` (full-file content is rendered via `bat` — falling back to `cat`, or to plain unstyled text if neither is available — never the selected diff tool): the current-side view (`f`) tints added lines dark green, the previous-side view (`F`) tints removed lines dark red. Syntax-highlighted foreground colors are preserved; only the background changes. Unchanged files, or a source where the diff has no hunks to show (e.g. an untracked file), have no tinted lines.
 - When you return to patch view, the file's patch-specific scroll position is restored.
 - `f` opens the current side.
   - Working Tree / Unstaged: working tree file

@@ -41,9 +41,24 @@ pub struct FilePreview {
     pub content_offset: usize,
 }
 
-/// `bat` always renders exactly this many lines (top border, `File:` line, mid border)
-/// before the first content line, given the `header,grid` style components we request.
+/// Fallback header size assumed for `bat` calls that don't force an explicit `--style`
+/// (i.e. `get_file_preview`, which relies on the user's own `bat` config/defaults): top
+/// border, `File:` line, mid border. Calls that need a reliable offset instead force
+/// `FULL_FILE_VIEW_BAT_STYLE`, whose header size is independent of `bat` config and file
+/// path length.
 const BAT_HEADER_LINE_COUNT: usize = 3;
+
+/// `--style` forced on full-file view's `bat` invocation (`render_content_preview`), with
+/// its exact header-row count. `numbers,grid` renders exactly one top border row before
+/// content and one after — no `File:` banner (redundant with the app's own pane border),
+/// and no dependency on the user's `bat` config or on path-length-driven header wrapping,
+/// both of which make the plain default style's offset unreliable. Always paired with the
+/// other flags `bat_ansi_args` adds alongside a forced style (`--wrap=never`, `--tabs=1`,
+/// `--no-config`) and with removing `BAT_OPTS` from the child's environment — without all
+/// of that, a user's own `bat` config or `BAT_OPTS` can still override row-mapping-critical
+/// behavior (wrapping, blank-line squeezing) that no single competing CLI flag can force
+/// back off on its own.
+const FULL_FILE_VIEW_BAT_STYLE: (&str, usize) = ("numbers,grid", 1);
 
 struct TempPreviewFile {
     path: PathBuf,
@@ -61,10 +76,66 @@ impl Drop for TempPreviewFile {
     }
 }
 
+/// Builds the `bat` argument list. Alongside a forced style, three extra flags guarantee
+/// full-file view's row mapping regardless of the user's own `bat` config or a `BAT_OPTS`
+/// environment override:
+/// - `--wrap=never` — an explicit CLI flag overrides both of those, unlike leaving `--wrap`
+///   unset, so wrapped lines can't turn one raw line into several display rows.
+/// - `--tabs=1` — expands every tab to exactly one space, instead of bat's default elastic
+///   tab stops (width depends on the preceding column, so the same raw tab byte can expand
+///   to a different number of spaces on different lines). A fixed, position-independent
+///   substitution keeps each raw tab byte mapped to exactly one display byte, which full-
+///   file search depends on (`App::searchable_lines_for_scope` matches the raw line; the
+///   display row is what actually gets highlighted). `--tabs=0` (pass the raw byte through
+///   unexpanded) would preserve that mapping too, but a literal tab byte in bat's ANSI
+///   output isn't a single renderable cell — `ansi-to-tui` doesn't handle it as plain text,
+///   corrupting the rest of that row's rendering.
+/// - `--no-config` — bat's own cross-platform flag for ignoring both `~/.config/bat/config`
+///   and `BAT_OPTS` entirely. Settings like `--squeeze-blank` have no CLI counterpart that
+///   forces them back off (the only flag is the one that turns them on), so a user enabling
+///   it via either source could otherwise still collapse consecutive blank lines.
+///
+/// `bat_env_removals` additionally strips `BAT_OPTS` from the child's environment as a
+/// defense-in-depth measure, in case some `bat` version's `--no-config` only covers the
+/// config file and not the environment variable.
+fn bat_ansi_args(display_name: Option<&str>, forced_style: Option<(&str, usize)>) -> Vec<String> {
+    let mut args = vec![
+        "--paging=never".to_string(),
+        "--color=always".to_string(),
+        "--decorations=always".to_string(),
+    ];
+    if let Some((style, _)) = forced_style {
+        args.push(format!("--style={}", style));
+        args.push("--wrap=never".to_string());
+        args.push("--tabs=1".to_string());
+        args.push("--no-config".to_string());
+    }
+    if let Some(name) = display_name {
+        args.push("--file-name".to_string());
+        args.push(name.to_string());
+    }
+    args
+}
+
+/// Environment variables to strip from `bat`'s child process alongside a forced style —
+/// see `bat_ansi_args`'s doc comment for why `BAT_OPTS` needs removing even with
+/// `--no-config` also passed. A pure, deterministic function (no actual env mutation) so
+/// the isolation contract can be unit-tested without touching this test process's own
+/// environment, which — being process-global — a real mutation could leak into other
+/// tests running concurrently on a different thread.
+fn bat_env_removals(forced_style: Option<(&str, usize)>) -> &'static [&'static str] {
+    if forced_style.is_some() {
+        &["BAT_OPTS"]
+    } else {
+        &[]
+    }
+}
+
 fn run_preview_commands(
     target_path: &Path,
     display_name: Option<&str>,
     repo_root: &Path,
+    forced_style: Option<(&str, usize)>,
 ) -> Result<FilePreview> {
     let mut last_error = None;
 
@@ -73,9 +144,9 @@ fn run_preview_commands(
         let uses_ansi = program == "bat";
 
         if uses_ansi {
-            command.args(["--paging=never", "--color=always", "--decorations=always"]);
-            if let Some(display_name) = display_name {
-                command.args(["--file-name", display_name]);
+            command.args(bat_ansi_args(display_name, forced_style));
+            for var in bat_env_removals(forced_style) {
+                command.env_remove(var);
             }
         }
 
@@ -83,10 +154,17 @@ fn run_preview_commands(
 
         match command.output() {
             Ok(output) if output.status.success() => {
+                let content_offset = if !uses_ansi {
+                    0
+                } else {
+                    forced_style
+                        .map(|(_, offset)| offset)
+                        .unwrap_or(BAT_HEADER_LINE_COUNT)
+                };
                 return Ok(FilePreview {
                     content: String::from_utf8_lossy(&output.stdout).to_string(),
                     uses_ansi,
-                    content_offset: if uses_ansi { BAT_HEADER_LINE_COUNT } else { 0 },
+                    content_offset,
                 });
             }
             Ok(output) => {
@@ -143,13 +221,41 @@ pub fn get_raw_commit_diff(revision: &str, path: &str, repo_root: &Path) -> Resu
     )
 }
 
+/// Git tracks a symlink's blob content as the literal target path string (mode `120000`),
+/// never the pointed-to file's own content — `fs::read`/`bat`/`cat` all transparently
+/// follow a symlink instead, which would show a worktree symlink's Current full-file view
+/// (or an untracked symlink's preview) as the wrong file's body, an external file outside
+/// the repo, or "unavailable" for a broken link, none of which match what `git diff` or
+/// `git show` display for the same path. Checked via `symlink_metadata`, which — unlike
+/// `metadata`/`fs::read` — does not itself follow the link, so this works even when the
+/// link is broken or points outside the repository.
+fn read_symlink_target(repo_root: &Path, path: &str) -> Option<String> {
+    let full_path = repo_root.join(path);
+    let metadata = fs::symlink_metadata(&full_path).ok()?;
+    if !metadata.file_type().is_symlink() {
+        return None;
+    }
+    let target = fs::read_link(&full_path).ok()?;
+    Some(target.to_string_lossy().into_owned())
+}
+
 /// File preview for content that `git diff` cannot render, such as untracked files.
 pub fn get_file_preview(path: &str, repo_root: &Path) -> Result<FilePreview> {
-    run_preview_commands(Path::new(path), None, repo_root)
+    if let Some(target) = read_symlink_target(repo_root, path) {
+        return Ok(FilePreview {
+            content: target,
+            uses_ansi: false,
+            content_offset: 0,
+        });
+    }
+    run_preview_commands(Path::new(path), None, repo_root, None)
 }
 
 /// Raw working-tree file contents, decoded lossily as UTF-8 for TUI display/copy.
 pub fn get_file_content(path: &str, repo_root: &Path) -> Result<String> {
+    if let Some(target) = read_symlink_target(repo_root, path) {
+        return Ok(target);
+    }
     let bytes = fs::read(repo_root.join(path))?;
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
@@ -158,7 +264,12 @@ pub fn get_file_content(path: &str, repo_root: &Path) -> Result<String> {
 /// original path for syntax detection and header display.
 pub fn render_content_preview(path: &str, content: &str, repo_root: &Path) -> Result<FilePreview> {
     let temp_file = create_temp_preview_file(path, content)?;
-    run_preview_commands(temp_file.path(), Some(path), repo_root)
+    run_preview_commands(
+        temp_file.path(),
+        Some(path),
+        repo_root,
+        Some(FULL_FILE_VIEW_BAT_STYLE),
+    )
 }
 
 /// File content at an arbitrary git revision expression such as `HEAD:path` or `:path`.
@@ -413,6 +524,37 @@ index abc..def 100644
 "#;
 
     #[test]
+    fn bat_ansi_args_omits_style_and_wrap_without_a_forced_style() {
+        let args = bat_ansi_args(None, None);
+        assert!(!args.iter().any(|a| a.starts_with("--style")));
+        assert!(!args.iter().any(|a| a.starts_with("--wrap")));
+        assert!(!args.iter().any(|a| a.starts_with("--tabs")));
+        assert!(!args.contains(&"--no-config".to_string()));
+        assert!(!args.contains(&"--file-name".to_string()));
+    }
+
+    #[test]
+    fn bat_ansi_args_forces_row_mapping_flags_alongside_a_forced_style() {
+        let args = bat_ansi_args(Some("src/lib.rs"), Some(("numbers,grid", 1)));
+        assert!(args.contains(&"--style=numbers,grid".to_string()));
+        assert!(args.contains(&"--wrap=never".to_string()));
+        assert!(args.contains(&"--tabs=1".to_string()));
+        assert!(args.contains(&"--no-config".to_string()));
+        assert!(args.contains(&"--file-name".to_string()));
+        assert!(args.contains(&"src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn bat_env_removals_is_empty_without_a_forced_style() {
+        assert!(bat_env_removals(None).is_empty());
+    }
+
+    #[test]
+    fn bat_env_removals_strips_bat_opts_alongside_a_forced_style() {
+        assert_eq!(bat_env_removals(Some(("numbers,grid", 1))), &["BAT_OPTS"]);
+    }
+
+    #[test]
     fn test_parse_hunk() {
         let fd = parse_diff(SAMPLE_DIFF);
         assert_eq!(fd.hunks.len(), 1);
@@ -509,6 +651,78 @@ index abc..def 100644
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_get_file_content_reads_a_symlinks_own_target_path_not_the_target_files_body() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-symlink-content-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("target.txt"), "target file body\n").unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.join("link.txt")).unwrap();
+
+        // Git's blob content for a symlink is the literal target path string with no
+        // trailing newline (mode 120000) — never the pointed-to file's own content.
+        let content = get_file_content("link.txt", &dir).unwrap();
+        assert_eq!(content, "target.txt");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_file_content_reads_a_broken_symlinks_target_path_instead_of_failing() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-broken-symlink-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        std::os::unix::fs::symlink("does-not-exist.txt", dir.join("broken.txt")).unwrap();
+
+        let content = get_file_content("broken.txt", &dir).unwrap();
+        assert_eq!(content, "does-not-exist.txt");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_get_file_preview_shows_a_symlinks_target_path_without_shelling_out() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-symlink-preview-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("target.txt"), "target file body\n").unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.join("link.txt")).unwrap();
+
+        let preview = get_file_preview("link.txt", &dir).unwrap();
+        assert_eq!(preview.content, "target.txt");
+        assert!(!preview.uses_ansi);
+        assert_eq!(preview.content_offset, 0);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn test_get_file_content_at_rev_reads_head_blob() {
         let unique = SystemTime::now()
@@ -579,9 +793,44 @@ index abc..def 100644
         assert!(preview.content.contains("println!"));
         if preview.uses_ansi {
             assert!(preview.content.contains("\u{1b}["));
-            assert!(preview.content.contains("src/sample.rs"));
             // The numbered gutter uses a vertical bar to separate line numbers from content.
             assert!(preview.content.contains('│'));
+            // The forced `numbers,grid` style drops bat's `File:` banner line (redundant
+            // with the app's own pane border) and gives a single, fixed-size header row.
+            assert!(!preview.content.contains("File:"));
+            assert_eq!(preview.content_offset, 1);
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_render_content_preview_offset_is_independent_of_path_length() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "diffview-render-content-preview-long-path-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        // A path long enough that bat's old `header-filename` banner would wrap onto a
+        // second line under its default style — the forced `numbers,grid` style has no
+        // such banner at all, so the header size can't grow with path length.
+        let long_path = format!("src/{}/sample.rs", "a".repeat(200));
+
+        let preview = render_content_preview(
+            &long_path,
+            "fn main() {\n    println!(\"hello\");\n}\n",
+            &dir,
+        )
+        .unwrap();
+
+        if preview.uses_ansi {
+            assert_eq!(preview.content_offset, 1);
         }
 
         fs::remove_dir_all(&dir).unwrap();

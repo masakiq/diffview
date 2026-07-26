@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, DiffTool, DiffViewMode, Focus, FullFileSource};
-use crate::ui::highlight::highlight_text;
+use crate::ui::highlight::{highlight_full_file_text, highlight_text};
 
 /// Background tint for full-file view's added/removed line highlight, matching delta's own
 /// default `plus-color`/`minus-color` so patch view (under `--tool delta`) and full-file view
@@ -89,8 +89,6 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let scroll = app.diff_scroll as u16;
-
     let text = if use_raw_renderer {
         build_raw_diff_text(app, content)
     } else {
@@ -100,8 +98,45 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     };
     let text = apply_full_file_line_bg(text, app, inner_area.width);
     let text = apply_full_file_cursor(text, app, inner_area.width);
-    let para = Paragraph::new(highlight_text(text, app.diff_search_query())).scroll((scroll, 0));
+    // Full-file search matches only real file content (App::searchable_lines_for_scope),
+    // not bat's line-number gutter or border rows — the highlight must skip those too, or
+    // a query that happens to also appear there would visually highlight a "match" `n`/`N`
+    // can never navigate to. See `full_file_search_highlight_uses_gutter`'s doc comment for
+    // why that gutter-skipping logic must not run on the cat/plain-text fallback.
+    let text = if app.full_file_search_highlight_uses_gutter() {
+        highlight_full_file_text(
+            text,
+            app.diff_search_query(),
+            &app.raw_diff,
+            app.full_file_content_offset,
+        )
+    } else {
+        highlight_text(text, app.diff_search_query())
+    };
+    let text = window_text_rows(text, app.diff_scroll, inner_area.height as usize);
+    let para = Paragraph::new(text);
     f.render_widget(para, inner_area);
+}
+
+/// Slices `text` down to just the rows a `visible_rows`-tall viewport starting at `start`
+/// would show, in place of `Paragraph::scroll`. That widget's scroll offset is a `u16`,
+/// which wraps for files beyond 65,535 lines — `App`'s own scroll/cursor state is `usize`
+/// with no such limit, so rendering must not reintroduce one by casting down to render.
+fn window_text_rows(text: Text<'_>, start: usize, visible_rows: usize) -> Text<'_> {
+    let start = start.min(text.lines.len());
+    let end = start.saturating_add(visible_rows).min(text.lines.len());
+    let lines = text
+        .lines
+        .into_iter()
+        .skip(start)
+        .take(end - start)
+        .collect();
+
+    Text {
+        alignment: text.alignment,
+        style: text.style,
+        lines,
+    }
 }
 
 fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
@@ -268,5 +303,62 @@ fn diff_line_style(line: &str) -> Style {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn numbered_text(count: usize) -> Text<'static> {
+        Text::from(
+            (0..count)
+                .map(|i| Line::from(Span::raw(i.to_string())))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn line_values(text: &Text) -> Vec<usize> {
+        text.lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .parse()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn window_text_rows_slices_to_the_visible_range() {
+        let text = numbered_text(100);
+        let windowed = window_text_rows(text, 10, 5);
+        assert_eq!(line_values(&windowed), vec![10, 11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn window_text_rows_clamps_start_and_end_at_the_last_line() {
+        let text = numbered_text(10);
+        let windowed = window_text_rows(text, 8, 5);
+        assert_eq!(line_values(&windowed), vec![8, 9]);
+
+        let text = numbered_text(10);
+        let windowed = window_text_rows(text, 50, 5);
+        assert!(line_values(&windowed).is_empty());
+    }
+
+    /// The reason this fix exists at all: with the old `Paragraph::scroll` approach, a
+    /// `usize` scroll offset above `u16::MAX` would wrap when cast down for rendering.
+    /// Slicing the `Text` directly has no such limit.
+    #[test]
+    fn window_text_rows_handles_offsets_beyond_u16_max() {
+        let count = u16::MAX as usize + 50;
+        let text = numbered_text(count);
+        let start = u16::MAX as usize + 10;
+        let windowed = window_text_rows(text, start, 3);
+        assert_eq!(line_values(&windowed), vec![start, start + 1, start + 2]);
     }
 }

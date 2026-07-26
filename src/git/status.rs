@@ -4,6 +4,10 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub struct GitFile {
     pub path: String,
+    /// The pre-rename/copy path, when git reports one (status `R`/`C`) — `None` otherwise.
+    /// A rename/copy's `path` is always the *new* path; the tree/HEAD blob a `Previous`
+    /// full-file view needs to look up lives at this old path instead.
+    pub previous_path: Option<String>,
     pub staged: char,
     pub unstaged: char,
 }
@@ -71,19 +75,21 @@ pub fn parse_status(output: &str) -> Vec<GitFile> {
         let unstaged = line.chars().nth(1).unwrap_or(' ');
         let rest = &line[3..];
 
-        // Handle renamed files "old -> new"
-        let path = if rest.contains(" -> ") {
-            rest.split(" -> ").last().unwrap_or(rest).to_string()
+        // Handle renamed/copied files "old -> new" — quotes git might add around either
+        // side for special filenames (e.g. ones containing a space) are stripped from both.
+        let (path, previous_path) = if let Some((old, new)) = rest.split_once(" -> ") {
+            (
+                new.trim_matches('"').to_string(),
+                Some(old.trim_matches('"').to_string()),
+            )
         } else {
-            rest.to_string()
+            (rest.trim_matches('"').to_string(), None)
         };
-
-        // Strip quotes git might add for special filenames
-        let path = path.trim_matches('"').to_string();
 
         if !path.is_empty() {
             files.push(GitFile {
                 path,
+                previous_path,
                 staged,
                 unstaged,
             });
@@ -108,15 +114,19 @@ pub fn parse_commit_name_status(output: &str) -> Vec<GitFile> {
 
         let status_token = parts[0];
         let status = status_token.chars().next().unwrap_or(' ');
-        let path = match status {
-            // Rename/copy format: R100\told\tnew, C100\told\tnew
-            'R' | 'C' => parts.get(2).copied().unwrap_or(parts[1]),
-            _ => parts[1],
+        // Rename/copy format: R100\told\tnew, C100\told\tnew
+        let (path, previous_path) = match status {
+            'R' | 'C' => (
+                parts.get(2).copied().unwrap_or(parts[1]),
+                Some(parts[1].to_string()),
+            ),
+            _ => (parts[1], None),
         };
 
         if !path.is_empty() {
             files.push(GitFile {
                 path: path.to_string(),
+                previous_path,
                 staged: status,
                 unstaged: status,
             });
@@ -149,6 +159,22 @@ mod tests {
         let input = "R  old.rs -> new.rs\n";
         let files = parse_status(input);
         assert_eq!(files[0].path, "new.rs");
+        assert_eq!(files[0].previous_path.as_deref(), Some("old.rs"));
+    }
+
+    #[test]
+    fn test_renamed_file_with_a_space_in_the_old_path_is_quoted_and_unquoted() {
+        let input = "R  \"old with space.rs\" -> new.rs\n";
+        let files = parse_status(input);
+        assert_eq!(files[0].path, "new.rs");
+        assert_eq!(files[0].previous_path.as_deref(), Some("old with space.rs"));
+    }
+
+    #[test]
+    fn test_non_renamed_file_has_no_previous_path() {
+        let input = " M src/main.rs\n";
+        let files = parse_status(input);
+        assert_eq!(files[0].previous_path, None);
     }
 
     #[test]
@@ -196,6 +222,14 @@ mod tests {
         let files = parse_commit_name_status(input);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/new.rs");
+        assert_eq!(files[0].previous_path.as_deref(), Some("src/old.rs"));
         assert_eq!(files[0].unstaged, 'R');
+    }
+
+    #[test]
+    fn test_parse_commit_name_status_non_rename_has_no_previous_path() {
+        let input = "M\tsrc/main.rs\n";
+        let files = parse_commit_name_status(input);
+        assert_eq!(files[0].previous_path, None);
     }
 }
