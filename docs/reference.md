@@ -38,13 +38,12 @@ diffview has two launch modes.
 
 | Pane | Description | Working Tree | Commit |
 |------|-------------|:---:|:---:|
-| **Tree Pane** | Left side of the screen. The entire area that displays the file tree. Width defaults to 20% and is configurable via `config.toml`. Hidden when focus is DiffView, InlineSelect, or FullFileSelect — the diff is shown full-screen instead. | ○ | ○ |
+| **Tree Pane** | Left side of the screen. The entire area that displays the file tree. Width defaults to 20% and is configurable via `config.toml`. Hidden when focus is DiffView or InlineSelect — the diff is shown full-screen instead. | ○ | ○ |
 | **Unstaged section** | Upper half of the Tree Pane. Shows working tree changes that have not been staged. | ○ | − |
 | **Staged section** | Lower half of the Tree Pane. Shows changes already registered in the index. | ○ | − |
 | **Files section** | The full Tree Pane area (Commit Mode only). Shows the list of files changed in the commit. | − | ○ |
-| **Diff Pane** | Right side of the screen (default 80%). Shows the patch diff of the selected file in normal operation. In DiffView focus, `f` opens the current-side full file and `F` opens the previous-side full file; pressing the same key again returns to patch view. Shown full-screen when focus is DiffView. | ○ | ○ |
+| **Diff Pane** | Right side of the screen (default 80%). Shows the patch diff of the selected file in normal operation. In DiffView focus, `f` opens the current-side full file and `F` opens the previous-side full file; pressing the same key again returns to patch view. Full-file view always shows a line cursor — see Full-file view rules below. Shown full-screen when focus is DiffView. | ○ | ○ |
 | **Inline Select Pane** | A line-selection screen that uses the same full-screen area as the DiffView focus. Allows staging/unstaging one line at a time. | ○ | − |
-| **Full File Select Pane** | A line-selection screen that uses the same full-screen area as the DiffView focus, entered with `s` from full-file view. Copies a cursor-selected line range to the clipboard; read-only, so it's available in both modes. | ○ | ○ |
 | **Status Bar** | Bottom 1 line of the screen. Displays the current tool name, operation hints, and file status legend. | ○ | ○ |
 
 ---
@@ -106,30 +105,6 @@ Entered from DiffView by pressing `v`. The Tree Pane is hidden and the diff is s
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Full File Select Pane (Working Tree Mode and Commit Mode)
-
-Entered from full-file view (DiffView, `f`/`F` already active) by pressing `s`. The
-Tree Pane is hidden and the diff is shown full-screen. The cursor starts on whichever
-file line is currently at the top of the pane — wherever the view was already scrolled
-to — not necessarily line 1. Pressing `v` marks the cursor's current row as the start of
-a range; moving with `j`/`k` from there extends the range. `y` copies the selected range
-(or just the cursor's line, if no range is active) to the clipboard.
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│ Full File Select Pane (full-screen)                                     │
-│ ┌─────────────────────────────────────────────────────────────────────┐ │
-│ │   1 │ fn main() {                                                   │ │
-│ │ ██ 2 │     let x = 1;        ← range start (v pressed here)         │ │
-│ │ ██ 3 │     let y = 2;                                                │ │
-│ │ ██ 4 │     let z = 3;        ← cursor (bold within the range)       │ │
-│ │   5 │ }                                                              │ │
-│ └─────────────────────────────────────────────────────────────────────┘ │
-│ ──────────────────────────── Status Bar ─────────────────────────────── │
-│ [LINE COPY] [j/k]move [v]select [y]copy [s]exit [h]tree ...             │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
 ---
 
 ## Focus States
@@ -141,20 +116,16 @@ Indicates which part of the screen is the current input target. Key behavior cha
        |              |
        v              v
    [DiffView] <-> [InlineSelect]
-       |    ^
-       v    h to go back
-  [FullFileSelect]
        ^
-  s to go back (full-file view only)
+  h to go back
 ```
 
 | Focus | Target pane | How to enter |
 |-------|------------|--------------|
 | **Unstaged** | Unstaged section | Initial focus on launch (unless Unstaged is empty and Staged has items, in which case Staged is the initial focus). Also entered by pressing `k` past the top of the Staged section. |
 | **Staged** | Staged section | Automatically entered by pressing `j` past the bottom of the Unstaged section. |
-| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; the selected file is shown full-screen). Moving the cursor in the tree updates the patch preview on the right but does not change focus. In Commit Mode, `Enter` works the same as `l`. Press `f` in DiffView to toggle the current-side full file, or `F` to toggle the previous-side full file. |
+| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; the selected file is shown full-screen). Moving the cursor in the tree updates the patch preview on the right but does not change focus. In Commit Mode, `Enter` works the same as `l`. Press `f` in DiffView to toggle the current-side full file, or `F` to toggle the previous-side full file. Full-file view always shows a line cursor within this same focus — see Full-file view rules below. |
 | **InlineSelect** | Inline Select Pane | Press `v` in DiffView. |
-| **FullFileSelect** | Full File Select Pane | Press `s` in DiffView while full-file view (`f`/`F`) is active. Press `s` again to return to DiffView, or `h`/`←` to return directly to the tree. |
 
 ---
 
@@ -164,14 +135,14 @@ Indicates which part of the screen is the current input target. Key behavior cha
 
 | Action | Key | Valid focus | Notes |
 |--------|-----|------------|-------|
-| Move down 1 line | `j` / `↓` | All | |
-| Move up 1 line | `k` / `↑` | All | |
+| Move down 1 line | `j` / `↓` | All | In full-file view, moves the cursor instead of just scrolling (the pane follows). |
+| Move up 1 line | `k` / `↑` | All | In full-file view, moves the cursor instead of just scrolling (the pane follows). |
 | Move down 5 lines | `Ctrl-d` | Unstaged, Staged | Fixed 5-line step in the Tree Pane |
 | Move up 5 lines | `Ctrl-u` | Unstaged, Staged | Fixed 5-line step in the Tree Pane |
-| Scroll down half page | `Ctrl-d` | DiffView, InlineSelect, FullFileSelect | Scrolls half the pane height. In FullFileSelect, moves the cursor by a half page instead (the pane follows). |
-| Scroll up half page | `Ctrl-u` | DiffView, InlineSelect, FullFileSelect | Scrolls half the pane height. In FullFileSelect, moves the cursor by a half page instead (the pane follows). |
-| Jump to top of diff | `g` | DiffView, FullFileSelect | In FullFileSelect, moves the cursor to the first file line instead of just scrolling. |
-| Jump to bottom of diff | `G` | DiffView, FullFileSelect | In FullFileSelect, moves the cursor to the last file line instead of just scrolling. |
+| Scroll down half page | `Ctrl-d` | DiffView, InlineSelect | Scrolls half the pane height. In full-file view, moves the cursor by a half page instead (the pane follows). |
+| Scroll up half page | `Ctrl-u` | DiffView, InlineSelect | Scrolls half the pane height. In full-file view, moves the cursor by a half page instead (the pane follows). |
+| Jump to top of diff | `g` | DiffView | In full-file view, moves the cursor to the first file line instead of just scrolling. |
+| Jump to bottom of diff | `G` | DiffView | In full-file view, moves the cursor to the last file line instead of just scrolling. |
 | Jump to next hunk | `]` | DiffView, InlineSelect | Available only in patch view. |
 | Jump to previous hunk | `[` | DiffView, InlineSelect | Available only in patch view. |
 
@@ -210,19 +181,22 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Toggle current-side full file | `f` | Available in DiffView only. Switches between patch view and the current side of the selected file. |
 | Toggle previous-side full file | `F` | Available in DiffView only. Switches between patch view and the previous side of the selected file. |
 | Copy opened full file | `P` | Available only in full-file view in DiffView. Copies the opened file contents to the clipboard. |
-| Enter line select | `s` | Available only in full-file view in DiffView. Enters FullFileSelect — see Full File Select below. |
+| Start / cancel line range | `v` | Available only in full-file view in DiffView. First press marks the cursor's current line as the start of a range; pressing `v` again while a range is active cancels it (back to a single-line cursor). |
+| Copy selected line(s) | `y` | Available only in full-file view in DiffView. Copies the active range to the clipboard, or just the cursor's line if no range is active. Copied text always ends in a newline, matching whole-file copy (`P`). |
 
 Full-file view rules:
 
 - While the tree pane is focused, the right pane always stays in patch preview mode. `f` and `F` have no effect there.
-- `v`, `[`, and `]` are available only in patch view (not full-file view's own DiffView focus). Note that `v` has an entirely different, unrelated meaning inside FullFileSelect once you've entered it with `s` — see Full File Select below.
+- `[` and `]` are available only in patch view (not full-file view). `v` is available in both, but means something different in each: in patch view it enters InlineSelect for staging; in full-file view it starts/cancels a line range for copying (see below) — it never enters a separate focus.
 - `P` works in either full-file view and copies the raw contents of the currently displayed file.
-- Patch-view scroll position is remembered per file. Full-file view does not remember scroll position across visits — instead, every time you switch from patch view to full-file view (`f`/`F` while in patch view), the opening scroll position is derived fresh from the patch pane's top-displayed line:
+- Full-file view always shows a line cursor over real content (not shown over an "unavailable" placeholder such as a binary/unmerged/missing file). `j`/`k`, `Ctrl-d`/`Ctrl-u`, and `g`/`G` move this cursor directly instead of just scrolling the pane, which follows along to keep the cursor visible. The cursor's own line gets a `DarkGray` background extended to the full pane width; within an active range (`v`), every line in the range gets the same tint, with the exact cursor line additionally bolded. This overlays (and takes precedence over) the added/removed diff tint described below.
+- `/`, `n`, and `N` search full-file content exactly as they do in patch view; moving to a match moves the cursor there too, not just the pane.
+- Patch-view scroll position is remembered per file. Full-file view does not remember scroll position across visits — instead, every time you switch from patch view to full-file view (`f`/`F` while in patch view), the opening scroll position (and cursor line) is derived fresh from the patch pane's top-displayed line:
   - `--tool raw`: exact — the patch pane's top line maps precisely to a file line via the parsed hunk data.
   - `--tool delta`: best-effort — only when delta is configured for `side-by-side` output with `line-numbers` enabled; the mapping reads the line number delta itself prints in the row's gutter (ANSI-stripped). Other delta configurations (unified mode, line numbers off) fall back to opening at the top. If the patch pane's top row isn't part of any hunk at all (e.g. delta's leading blank line before the first hunk, or the gap between hunks), the mapping skips forward to the next row that is.
   - `--tool difftastic`: always opens at the top — difftastic's structural diff has no parseable line-number correspondence.
   - In all cases, the mapped line is positioned at the very top of the pane.
-- Switching between `FullFile(Current)` and `FullFile(Previous)` while already in full-file view (`f`/`F` pressed there, not from patch view) keeps the current scroll row as-is instead of recomputing from the patch pane — both directions (`f`→`F` and `F`→`f`) preserve it.
+- Switching between `FullFile(Current)` and `FullFile(Previous)` while already in full-file view (`f`/`F` pressed there, not from patch view) keeps the current scroll row and cursor line as-is instead of recomputing from the patch pane — both directions (`f`→`F` and `F`→`f`) preserve it. Any active range is cleared on the switch.
 - Lines the underlying diff marks as changed get a background tint, independent of `--tool` (full-file content is always rendered through `bat`, not the selected diff tool): the current-side view (`f`) tints added lines dark green, the previous-side view (`F`) tints removed lines dark red. Syntax-highlighted foreground colors are preserved; only the background changes. Unchanged files, or a source where the diff has no hunks to show (e.g. an untracked file), have no tinted lines.
 - When you return to patch view, the file's patch-specific scroll position is restored.
 - `f` opens the current side.
@@ -238,30 +212,7 @@ Full-file view rules:
   - Example: pressing `F` on an added or untracked file
 - Binary files show `Full file view unavailable for binary files`.
 - Unmerged files show `Full file view unavailable for unmerged files`.
-
-### Full File Select
-
-| Action | Key | Description |
-|--------|-----|-------------|
-| Enter line select | `s` | From DiffView, full-file view only. Cursor starts on the file line currently at the top of the pane; the viewport doesn't move. |
-| Move cursor | `j` / `k` | Moves one line at a time; the pane scrolls to keep the cursor visible. |
-| Jump by half page | `Ctrl-d` / `Ctrl-u` | Moves the cursor by half the pane height at once; the pane scrolls to keep it visible. |
-| Jump to first / last line | `g` / `G` | Moves the cursor straight to line 1 or the last line of the file; the pane scrolls to keep it visible. |
-| Start / cancel range | `v` | First press marks the cursor's current line as the start of a range. Pressing `v` again while a range is active cancels it (back to a single-line cursor); the cursor itself is unaffected either way. |
-| Copy | `y` | Copies the active range to the clipboard, or just the cursor's line if no range is active. Copied text always ends in a newline, matching whole-file copy (`P`). |
-| Search | `/` | Same as DiffView's search, over the same full-file content. Moving to a match moves the cursor there too (not just the pane). |
-| Next / previous match | `n` / `N` | Moves the cursor (and pane) to the next/previous search match. |
-| Exit to full-file view | `s` | Returns to plain full-file scrolling (DiffView). Clears any active range. |
-| Return to tree | `h` / `←` | Same as DiffView's `h` — leaves full-file view entirely and returns to the tree. Clears any active range. |
-| Quit | `q` | Exits the application. |
-
-Notes:
-
-- Applies to both `f` (current side) and `F` (previous side) full-file views, and works in both Working Tree Mode and Commit Mode (it's read-only, so — unlike InlineSelect — it isn't restricted to Working Tree Mode).
-- The cursor's own line always gets a `DarkGray` background extended to the full pane width; within an active range, every line in the range gets the same tint, with the exact cursor line additionally bolded. This overlays (and takes precedence over) the added/removed diff tint described above.
-- `f`, `F`, and `P` are not available while in FullFileSelect — exit with `s` first.
-- Search state is shared with plain full-file view: starting a search in DiffView and then pressing `s` keeps it active in FullFileSelect (and vice versa), since both search the same underlying content.
-- Entering line select picks up the cursor at whatever file line is already showing at the top of the pane; it does not change the scroll position or jump to line 1. If the view happens to be scrolled above the first content row (e.g. showing part of bat's header decoration) or past the last one, the cursor clamps to the first or last file line respectively.
+- `v` and `y` are read-only operations, so they work over full-file content in Commit Mode too, not just Working Tree Mode.
 
 ### Other
 
@@ -318,7 +269,6 @@ Errors and operation results are shown in the center of the Status Bar.
 |-------|---------|-------|
 | Normal | `[j/k]move [u]stage ...` | White |
 | InlineSelect active | `[SELECT] [j/k]move ...` | Black on yellow |
-| FullFileSelect active | `[LINE COPY] [j/k]move ...` | Black on yellow |
 | Searching | `[SEARCH] /query` | Black on yellow |
 | Operation success | `Staged: src/main.rs` | Yellow |
 | Error | `⚠ failed to apply patch` | Red, bold |

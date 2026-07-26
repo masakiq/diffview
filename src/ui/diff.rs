@@ -21,10 +21,7 @@ const FULL_FILE_REMOVED_BG: Color = Color::Rgb(63, 0, 1);
 const FULL_FILE_SELECT_BG: Color = Color::DarkGray;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let focused = matches!(
-        app.focus,
-        Focus::DiffView | Focus::InlineSelect | Focus::FullFileSelect
-    );
+    let focused = matches!(app.focus, Focus::DiffView | Focus::InlineSelect);
 
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -102,7 +99,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|| build_raw_diff_text(app, content))
     };
     let text = apply_full_file_line_bg(text, app, inner_area.width);
-    let text = apply_full_file_select_cursor(text, app, inner_area.width);
+    let text = apply_full_file_cursor(text, app, inner_area.width);
     let para = Paragraph::new(highlight_text(text, app.diff_search_query())).scroll((scroll, 0));
     f.render_widget(para, inner_area);
 }
@@ -196,19 +193,21 @@ fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a
     }
 }
 
-/// Overlays the line-select cursor/range on full-file view rows while
-/// `Focus::FullFileSelect` is active: every row within `[anchor, cursor]` (or just the
-/// cursor's own row when no range is active) gets `FULL_FILE_SELECT_BG`, with the exact
-/// cursor row additionally bolded to mark it within a multi-row range. Wins over the
-/// add/removed diff tint on overlapping rows, since it's applied afterward.
-fn apply_full_file_select_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
-    if app.focus != Focus::FullFileSelect {
+/// Overlays the always-on full-file cursor/range: every row within `[anchor, cursor]`
+/// (or just the cursor's own row when no range is active) gets `FULL_FILE_SELECT_BG`,
+/// with the exact cursor row additionally bolded to mark it within a multi-row range.
+/// A no-op unless `app.full_file_cursor_active()` — i.e. outside full-file view, or
+/// over an "unavailable" placeholder (binary/unmerged/missing) rather than real
+/// content. Wins over the add/removed diff tint on overlapping rows, since it's
+/// applied afterward.
+fn apply_full_file_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
+    if !app.full_file_cursor_active() {
         return text;
     }
 
     let offset = app.full_file_content_offset;
-    let cursor = app.full_file_select_cursor;
-    let (lo, hi) = match app.full_file_select_anchor {
+    let cursor = app.full_file_cursor;
+    let (lo, hi) = match app.full_file_anchor {
         Some(anchor) => (anchor.min(cursor), anchor.max(cursor)),
         None => (cursor, cursor),
     };

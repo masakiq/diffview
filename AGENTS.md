@@ -40,7 +40,7 @@ Rust TUI application for interacting with git diffs. Uses ratatui + crossterm fo
 
 - **`App`** (`app.rs`): Central state. Owns both `TreeSection`s, diff state, focus state, commit mode (`commit_revision`), and all key handlers. The `run()` method is the event loop.
 - **`TreeSection`**: Manages `all_nodes: Vec<TreeNode>` + `visible: Vec<usize>` (indices into all_nodes). Folding works by filtering visible indices based on ancestor expansion state.
-- **`Focus`** enum: `Unstaged | Staged | DiffView | InlineSelect | FullFileSelect` — determines which key handler runs
+- **`Focus`** enum: `Unstaged | Staged | DiffView | InlineSelect` — determines which key handler runs
 - **`TreePane`** enum: `Unstaged | Staged` — identifies which tree section, used for diff origin tracking
 - **`FileDiff` / `Hunk` / `DiffLine`** (`git/diff.rs`): Parsed diff structure used for line-level operations
 
@@ -55,7 +55,7 @@ The UI splits into: left tree pane (1/4 width) + right diff pane (3/4 width) + b
 
 - Working tree mode tree operations use `u` for stage/unstage on files and directories
 - InlineSelect uses `u` to apply the selected lines
-- FullFileSelect (`s` from full-file view) uses `v` to start/cancel a line range and `y` to copy it — read-only, so available in Commit Mode too, unlike InlineSelect
+- Full-file view (`f`/`F`, still `Focus::DiffView`) always shows a line cursor over real content; `v` starts/cancels a line range and `y` copies it — read-only, so it works in Commit Mode too, unlike InlineSelect
 - Commit mode keeps `Enter` as an open shortcut in the tree, equivalent to `l`
 
 ### Partial Patch System (`git/apply.rs`)

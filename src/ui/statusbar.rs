@@ -41,17 +41,6 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(format!(" {}", app.inline_select_help_text())),
         ]
-    } else if app.focus == Focus::FullFileSelect {
-        vec![
-            Span::styled(
-                " [LINE COPY] ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!(" {}", app.full_file_select_help_text())),
-        ]
     } else {
         build_normal_statusbar(app)
     };
@@ -73,14 +62,12 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
             Focus::Unstaged | Focus::Staged => app.tree_help_text(),
             Focus::DiffView => app.diff_help_text(),
             Focus::InlineSelect => app.inline_select_help_text(),
-            Focus::FullFileSelect => app.full_file_select_help_text(),
         }
     } else {
         match app.focus {
             Focus::Unstaged | Focus::Staged => app.tree_help_text(),
             Focus::DiffView => app.diff_help_text(),
             Focus::InlineSelect => app.inline_select_help_text(),
-            Focus::FullFileSelect => app.full_file_select_help_text(),
         }
     };
 
