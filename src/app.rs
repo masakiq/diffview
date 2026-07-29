@@ -741,7 +741,8 @@ impl App {
         if let Some(node) = section.current_node() {
             if !node.is_dir {
                 let path = node.path.to_string_lossy().to_string();
-                let _ = self.load_diff(&path, pane, DiffViewMode::Patch);
+                let view_mode = self.default_view_mode_for(pane, &path);
+                let _ = self.load_diff(&path, pane, view_mode);
             }
         }
     }
@@ -850,9 +851,26 @@ impl App {
         {
             ops.push_str(" [v]select");
         }
+        // An untracked/unstaged file has no patch view to toggle to (see
+        // `current_file_is_untracked_unstaged`), so `f` is disabled there — drop its
+        // hint rather than advertise a key that silently does nothing.
         ops.push_str(match self.diff_view_mode {
             DiffViewMode::Patch => " [f]file [F]prev-file",
+            DiffViewMode::FullFile(FullFileSource::Current)
+                if self.current_file_is_untracked_unstaged() =>
+            {
+                " [F]prev-file"
+            }
             DiffViewMode::FullFile(FullFileSource::Current) => " [f]diff [F]prev-file",
+            // A second `F` here would land back on `Patch` (`toggle_full_file` matches
+            // `current == source`) — blocked by the same untracked/unstaged guard
+            // `toggle_full_file_view` uses, so drop `[F]diff` from the hint too. `f`
+            // still works (goes to `FullFile(Current)`, not `Patch`).
+            DiffViewMode::FullFile(FullFileSource::Previous)
+                if self.current_file_is_untracked_unstaged() =>
+            {
+                " [f]file"
+            }
             DiffViewMode::FullFile(FullFileSource::Previous) => " [f]file [F]diff",
         });
 
@@ -1172,6 +1190,19 @@ impl App {
         self.diff_scroll = 0;
         self.diff_cursor = 0;
         self.hunk_cursor = 0;
+        if view_mode.is_full_file() {
+            // A file selection can now land here directly in full-file view (an
+            // untracked file — see `default_view_mode_for`), bypassing the patch-view
+            // step that `toggle_full_file_view` normally resets these through. Without
+            // this, `full_file_cursor`/`full_file_anchor` from whatever file was
+            // previously open in full-file view would carry over — e.g. a cursor deep
+            // in a 500-line file left dangling past the end of a 10-line one just
+            // selected. `toggle_full_file_view` still overwrites `full_file_cursor`
+            // with its own derived value right after calling `load_diff`, and always
+            // clears `full_file_anchor` itself, so this doesn't change that path.
+            self.full_file_cursor = 0;
+            self.full_file_anchor = None;
+        }
     }
 
     fn build_patch_line_infos(raw: &str) -> Vec<DisplayLineInfo> {
@@ -1654,11 +1685,43 @@ impl App {
             let prev_scroll = self.diff_scroll;
             let prev_cursor = self.diff_cursor;
             let prev_patch_cursor = self.patch_cursor;
+            // `apply_loaded_diff_state` unconditionally zeroes `full_file_cursor`/
+            // `full_file_anchor` on every full-file load (needed for a fresh file
+            // selection — see its own comment) — reload is the one full-file load that
+            // must instead carry these over from before the call, or a same-file
+            // refresh (`r`, or Delta's terminal-resize reflow) would silently snap the
+            // cursor back to the top of the file (review_9 Finding 1).
+            let prev_full_file_cursor = self.full_file_cursor;
+            let prev_full_file_anchor = self.full_file_anchor;
+            let prev_view_mode = self.diff_view_mode;
             let view_mode = if self.focus == Focus::InlineSelect {
                 DiffViewMode::Patch
+            } else if prev_view_mode == DiffViewMode::Patch
+                && self.has_untracked_file_in_pane(pane, &path)
+            {
+                // The file's tracked status can change out from under an open Patch view —
+                // e.g. an external `git rm --cached` while it's open, picked up by the next
+                // `refresh_trees()` this reload follows. An untracked file has no patch of
+                // its own to show in Patch mode (`load_diff` falls back to the same bat
+                // rendering full-file view shows — see `default_view_mode_for`), so
+                // normalize it the same way a fresh selection would rather than leaving
+                // Patch mode displaying that content under the wrong label, with `v`
+                // routed to the InlineSelect branch instead of full-file range-select
+                // (review_11 Finding 1). Only when the *current* mode is Patch — an
+                // already-open FullFile view (reached via an explicit `f`/`F` before the
+                // file went untracked) is left alone; the branches below already reload it
+                // correctly as full-file.
+                DiffViewMode::FullFile(FullFileSource::Current)
             } else {
-                self.diff_view_mode
+                prev_view_mode
             };
+            // Whether the branch above actually swapped modes (Patch -> FullFile due to
+            // the untracked normalization) rather than reloading the same mode as before —
+            // distinguishes a *fresh* entry into full-file view (full_file_cursor/anchor
+            // should stay at the zeroed values `apply_loaded_diff_state` just set, not
+            // inherit whatever was last sitting in those fields from Patch mode) from an
+            // actual same-mode full-file reload (which must restore them, see below).
+            let mode_changed = view_mode != prev_view_mode;
             // Before reflow: capture the patch cursor's semantic file line — and which
             // side (Current/Previous) it was found on — so it can be re-anchored after
             // reload instead of restored by raw index. Delta's side-by-side wrap can
@@ -1681,25 +1744,50 @@ impl App {
             };
 
             self.load_diff(&path, pane, view_mode)?;
-            let scroll_line_count = if self.focus == Focus::InlineSelect {
-                self.raw_line_count
+            if mode_changed {
+                // The untracked-normalization branch above just swapped Patch for
+                // FullFile(Current) — this is a fresh entry into full-file view, not a
+                // same-mode reload, so leave `diff_scroll`/`full_file_cursor`/
+                // `full_file_anchor` at the zeroed values `apply_loaded_diff_state` already
+                // set instead of carrying over Patch mode's `prev_scroll`/
+                // `prev_full_file_cursor`/`prev_full_file_anchor`, which index an entirely
+                // different row space (patch display rows vs. full-file content lines).
             } else {
-                self.display_line_count
-            };
-            self.diff_scroll = prev_scroll.min(scroll_line_count.saturating_sub(1));
-            self.diff_cursor = prev_cursor.min(self.raw_line_count.saturating_sub(1));
-            // `load_diff` already reset `patch_cursor` to the top of whichever viewport
-            // `restore_saved_diff_scroll` restored — reconcile it with the pre-reload
-            // cursor the same way `diff_scroll`/`diff_cursor` are reconciled above, so a
-            // refresh doesn't silently snap the patch cursor to an unrelated row.
-            if view_mode == DiffViewMode::Patch {
-                self.patch_cursor =
-                    prev_patch_cursor.min(self.display_line_count.saturating_sub(1));
-                if let Some((line, side, viewport_offset)) = delta_anchor {
-                    if let Some(new_row) = self.delta_display_row_for_line(line, side) {
-                        self.patch_cursor = new_row;
-                        self.diff_scroll = new_row.saturating_sub(viewport_offset);
+                let scroll_line_count = if self.focus == Focus::InlineSelect {
+                    self.raw_line_count
+                } else {
+                    self.display_line_count
+                };
+                self.diff_scroll = prev_scroll.min(scroll_line_count.saturating_sub(1));
+                self.diff_cursor = prev_cursor.min(self.raw_line_count.saturating_sub(1));
+                // `load_diff` already reset `patch_cursor` to the top of whichever viewport
+                // `restore_saved_diff_scroll` restored — reconcile it with the pre-reload
+                // cursor the same way `diff_scroll`/`diff_cursor` are reconciled above, so a
+                // refresh doesn't silently snap the patch cursor to an unrelated row.
+                if view_mode == DiffViewMode::Patch {
+                    self.patch_cursor =
+                        prev_patch_cursor.min(self.display_line_count.saturating_sub(1));
+                    if let Some((line, side, viewport_offset)) = delta_anchor {
+                        if let Some(new_row) = self.delta_display_row_for_line(line, side) {
+                            self.patch_cursor = new_row;
+                            self.diff_scroll = new_row.saturating_sub(viewport_offset);
+                        }
                     }
+                } else if view_mode.is_full_file() {
+                    self.full_file_cursor =
+                        prev_full_file_cursor.min(self.raw_line_count.saturating_sub(1));
+                    // Only restore the anchor when the reloaded content is actually
+                    // copyable/non-empty — i.e. `full_file_cursor_active()` would be true
+                    // here (setting focus aside). Otherwise (the file went binary/unmerged/
+                    // missing/empty on this reload) there's no real cursor for the anchor to
+                    // pair with; keeping it anyway left a hidden `Some(0)` that would spring
+                    // back into an unintended range the moment the file became real text
+                    // again on a later reload, before the next `v` press (review_10 Finding 1).
+                    self.full_file_anchor = if self.full_file_copyable && self.raw_line_count > 0 {
+                        prev_full_file_anchor.map(|anchor| anchor.min(self.raw_line_count - 1))
+                    } else {
+                        None
+                    };
                 }
             }
             // The reconciliation above overwrites whatever `restore_saved_diff_scroll`
@@ -1719,6 +1807,35 @@ impl App {
             .all_nodes
             .iter()
             .any(|n| !n.is_dir && n.path == Path::new(path) && n.is_untracked())
+    }
+
+    /// Which view mode a file selection should open in. An untracked file has no hunks
+    /// of its own to show in patch view — `load_diff` falls back to `get_file_preview`'s
+    /// bat rendering there too, the exact same content full-file view shows — so opening
+    /// it in patch view first is just a redundant step before the inevitable `f` press.
+    /// Skip straight to full-file view instead, where `v`/`y` line-range select already
+    /// works; tracked files still open in patch view as before.
+    fn default_view_mode_for(&self, pane: TreePane, path: &str) -> DiffViewMode {
+        if self.has_untracked_file_in_pane(pane, path) {
+            DiffViewMode::FullFile(FullFileSource::Current)
+        } else {
+            DiffViewMode::Patch
+        }
+    }
+
+    /// Whether the currently open file is untracked in the Unstaged pane — the only case
+    /// `default_view_mode_for` routes into full-file view on its own (Staged never holds
+    /// an untracked node; Commit Mode has none at all, see `has_untracked_file_in_pane`).
+    /// `f` toggles back to `Patch` here, but that's just `get_file_preview`'s bat
+    /// rendering again under a different label — the same content full-file view already
+    /// shows, minus the range-select cursor — so there is no real patch view to toggle to.
+    fn current_file_is_untracked_unstaged(&self) -> bool {
+        match (self.current_file.as_deref(), self.diff_origin) {
+            (Some(path), Some(pane @ TreePane::Unstaged)) => {
+                self.has_untracked_file_in_pane(pane, path)
+            }
+            _ => false,
+        }
     }
 
     fn schedule_tree_preview(&mut self, pane: TreePane) {
@@ -1759,8 +1876,6 @@ impl App {
 
     fn refresh_latest_state(&mut self) -> Result<()> {
         let prev_focus = self.focus.clone();
-        let prev_scroll = self.diff_scroll;
-        let prev_cursor = self.diff_cursor;
         let current = self.current_file.clone().zip(self.diff_origin);
         self.clear_diff_cache();
         self.pending_tree_preview = None;
@@ -1793,19 +1908,16 @@ impl App {
             }
             Focus::DiffView | Focus::InlineSelect => {
                 if current.is_some() {
+                    // `reload_current_diff` already saves and restores `diff_scroll`/
+                    // `diff_cursor`/`patch_cursor`/`full_file_cursor`/`full_file_anchor`
+                    // itself (each clamped to the freshly reloaded content, and re-clamped
+                    // into the viewport via `follow_active_diff_cursor`) — this used to
+                    // redundantly re-clamp `diff_scroll`/`diff_cursor`/`full_file_cursor`
+                    // against `raw_line_count` on top of that, and unconditionally zeroed
+                    // `full_file_anchor` regardless of what `reload_current_diff` had just
+                    // restored, silently dropping an active full-file range on every `r`
+                    // refresh (review_9 Finding 1).
                     self.reload_current_diff()?;
-                    let line_count = self.raw_line_count;
-                    self.diff_scroll = prev_scroll.min(line_count.saturating_sub(1));
-                    self.diff_cursor = prev_cursor.min(line_count.saturating_sub(1));
-                    if self.diff_view_mode.is_full_file() {
-                        self.full_file_cursor =
-                            self.full_file_cursor.min(line_count.saturating_sub(1));
-                        self.full_file_anchor = None;
-                    } else if self.diff_view_mode == DiffViewMode::Patch {
-                        self.patch_cursor = self
-                            .patch_cursor
-                            .min(self.display_line_count.saturating_sub(1));
-                    }
                 } else {
                     self.clear_diff();
                 }
@@ -2392,7 +2504,8 @@ impl App {
             self.tree_mut(pane).expand_and_enter();
             self.tree_load_preview();
         } else {
-            self.load_diff(&path, pane, DiffViewMode::Patch)?;
+            let view_mode = self.default_view_mode_for(pane, &path);
+            self.load_diff(&path, pane, view_mode)?;
             self.focus = Focus::DiffView;
         }
         Ok(())
@@ -2558,7 +2671,8 @@ impl App {
             return;
         }
 
-        let _ = self.load_diff(&path, pane, DiffViewMode::Patch);
+        let view_mode = self.default_view_mode_for(pane, &path);
+        let _ = self.load_diff(&path, pane, view_mode);
     }
 
     fn refresh_after_tree_op(&mut self) -> Result<()> {
@@ -2709,8 +2823,21 @@ impl App {
     /// real, copyable content — not patch view, not an "unavailable" placeholder
     /// (binary/unmerged/missing file on the requested side), and not an empty file (no
     /// line for the cursor to sit on).
+    ///
+    /// Requires `Focus::DiffView`. This used to not check focus at all, on the
+    /// assumption that full-file mode always resets back to `Patch` before focus can
+    /// leave the diff pane — true until an untracked/unstaged file started defaulting
+    /// straight into full-file view for its tree preview (`default_view_mode_for`):
+    /// that preview renders with `Focus::Unstaged`/`Focus::Staged` still active, so
+    /// without this check the tree-preview pane showed an apparently-operable cursor
+    /// that `j`/`k`/`v`/`y` (all gated on `Focus::DiffView` in `handle_diff_key`)
+    /// couldn't actually move or act on — `j`/`k` moved the tree cursor instead
+    /// (review_9 Finding 2).
     pub fn full_file_cursor_active(&self) -> bool {
-        self.diff_view_mode.is_full_file() && self.full_file_copyable && self.raw_line_count > 0
+        self.focus == Focus::DiffView
+            && self.diff_view_mode.is_full_file()
+            && self.full_file_copyable
+            && self.raw_line_count > 0
     }
 
     /// Whether the always-on patch-view cursor applies right now: `Focus::DiffView`
@@ -2719,11 +2846,10 @@ impl App {
     /// (raw-line) row space than `patch_cursor`'s display-row one, so the two must never
     /// both be active together.
     ///
-    /// Unlike `full_file_cursor_active` (which doesn't gate on focus at all — full-file
-    /// mode is always reset back to `Patch` before focus can leave the diff pane, so that
-    /// check is never exercised unfocused in practice), patch mode routinely stays active
-    /// while the tree pane merely previews it, so the focus check here is load-bearing:
-    /// without it, an unfocused preview would show a cursor the user never navigated to.
+    /// Patch mode routinely stays active while the tree pane merely previews it (same
+    /// reason `full_file_cursor_active` now checks focus too, see its own comment), so
+    /// the focus check here is load-bearing: without it, an unfocused preview would show
+    /// a cursor the user never navigated to.
     pub fn patch_cursor_active(&self) -> bool {
         self.focus == Focus::DiffView
             && self.diff_view_mode == DiffViewMode::Patch
@@ -2748,6 +2874,18 @@ impl App {
         };
 
         let next_mode = self.diff_view_mode.toggle_full_file(source);
+        // An untracked/unstaged file has no patch view of its own to fall back to (see
+        // `current_file_is_untracked_unstaged`) — it's `get_file_preview`'s bat rendering
+        // either way, just without the range-select cursor. Block only the `Patch`
+        // landing specifically: `f`/`F` still need to work for moving *between*
+        // `FullFile(Current)`/`FullFile(Previous)` (the latter always resolves to the
+        // unavailable-previous-side message for such a file, which is itself useful to
+        // see). Checked here rather than by guarding the `f`/`F` key match arms so every
+        // route to `Patch` — including a second `F` press while already on `Previous` —
+        // is covered by the same single check.
+        if next_mode == DiffViewMode::Patch && self.current_file_is_untracked_unstaged() {
+            return Ok(());
+        }
         let entering_full_file_from_patch =
             self.diff_view_mode == DiffViewMode::Patch && next_mode.is_full_file();
         let target_line = entering_full_file_from_patch
@@ -2791,6 +2929,19 @@ impl App {
             self.diff_scroll = display_row
                 .saturating_sub(patch_screen_row.unwrap_or(0))
                 .min(self.display_line_count.saturating_sub(1));
+        } else if was_full_file && !self.full_file_cursor_active() {
+            // Switching between full-file sides but landing on an unavailable placeholder
+            // (binary/unmerged/missing/empty — `full_file_cursor_active()` is false here
+            // for exactly that reason). The placeholder's own tiny line count is
+            // meaningless for the outgoing side's position, so restore it unclamped rather
+            // than through the `raw_line_count`/`display_line_count` clamp below — that
+            // clamp would otherwise crush a deep (cursor, scroll) down to (0, 0) on the
+            // placeholder, discarding it before a later switch back to an available side
+            // could ever restore it (review_11 Finding 2). `follow_full_file_cursor` below
+            // is also skipped for the same `full_file_cursor_active()` reason, so nothing
+            // re-clamps this against the placeholder's viewport either.
+            self.diff_scroll = preserved_full_file_scroll.unwrap_or(0);
+            self.full_file_cursor = preserved_full_file_cursor.unwrap_or(0);
         } else if let Some(scroll) = preserved_full_file_scroll {
             self.diff_scroll = scroll.min(self.display_line_count.saturating_sub(1));
             self.full_file_cursor = preserved_full_file_cursor
@@ -2828,7 +2979,12 @@ impl App {
 
         if self.diff_view_mode.is_full_file() {
             if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
-                self.load_diff(&path, pane, DiffViewMode::Patch)?;
+                // An untracked file's tree-preview mode is full-file view itself (see
+                // `default_view_mode_for`), so falling back to `Patch` here would
+                // needlessly reload it into the same bat-rendered content under a
+                // different label — go to whichever mode the tree would open it in.
+                let tree_preview_mode = self.default_view_mode_for(pane, &path);
+                self.load_diff(&path, pane, tree_preview_mode)?;
             } else {
                 self.diff_view_mode = DiffViewMode::Patch;
                 self.content_annotation = None;
@@ -4366,6 +4522,45 @@ mod tests {
     }
 
     #[test]
+    fn diff_help_text_omits_the_f_hint_for_an_untracked_unstaged_file() {
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.current_file = Some("new.txt".to_string());
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+
+        let help = app.diff_help_text();
+        assert!(!help.contains("[f]"));
+        assert!(help.contains("[F]prev-file"));
+    }
+
+    #[test]
+    fn diff_help_text_omits_the_capital_f_hint_for_an_untracked_unstaged_file_on_the_previous_side()
+    {
+        // review_9 Finding 3: after one `F` press (`FullFile(Current)` ->
+        // `FullFile(Previous)`), the untracked-file branch above only covered
+        // `FullFile(Current)` — this covers the `Previous` side, where a second `F`
+        // would otherwise be advertised even though `toggle_full_file_view` blocks it.
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.current_file = Some("new.txt".to_string());
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Previous);
+
+        let help = app.diff_help_text();
+        assert!(!help.contains("[F]"));
+        assert!(help.contains("[f]file"));
+    }
+
+    #[test]
     fn full_file_clipboard_text_requires_copyable_full_file_state() {
         let mut app = make_test_app();
         app.current_file = Some("src/lib.rs".to_string());
@@ -4581,6 +4776,7 @@ mod tests {
     #[test]
     fn apply_full_file_cursor_preserves_a_search_matchs_yellow_background() {
         let mut app = make_test_app();
+        app.focus = Focus::DiffView;
         app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         app.full_file_copyable = true;
         app.raw_line_count = 3;
@@ -4671,6 +4867,318 @@ mod tests {
 
         assert_eq!(app.diff_scroll, 2);
         assert_eq!(app.patch_cursor, 8);
+    }
+
+    #[test]
+    fn reload_current_diff_preserves_the_full_file_cursor_and_anchor_across_a_refresh() {
+        // review_9 Finding 1: `apply_loaded_diff_state` unconditionally zeroes
+        // `full_file_cursor`/`full_file_anchor` on every full-file load (needed for a
+        // fresh file selection), and `reload_current_diff` never saved/restored either
+        // one — so a same-file refresh (`r`, or Delta's terminal-resize reflow, both of
+        // which go through this function) silently snapped a deep cursor/range back to
+        // the top of the file.
+        let mut app = make_test_app();
+        // `follow_active_diff_cursor` (exercised below) now requires `Focus::DiffView`
+        // (review_9 Finding 2) — set it so the viewport-follow assertions below actually
+        // exercise that call instead of it silently no-oping.
+        app.focus = Focus::DiffView;
+        let mut full_cached = make_cached_diff_with_lines(120);
+        full_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, full_cached);
+
+        app.load_diff(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        app.full_file_cursor = 100;
+        app.full_file_anchor = Some(90);
+        app.diff_scroll = 91;
+
+        app.reload_current_diff().unwrap();
+
+        assert_eq!(app.full_file_cursor, 100);
+        assert_eq!(app.full_file_anchor, Some(90));
+        // `follow_active_diff_cursor` (called at the end of `reload_current_diff`) also
+        // re-clamps the viewport so the restored cursor isn't left rendered off-screen.
+        assert!(app.diff_scroll <= app.full_file_cursor);
+        assert!(app.full_file_cursor < app.diff_scroll + app.diff_pane_height);
+    }
+
+    #[test]
+    fn reload_current_diff_clamps_the_full_file_cursor_and_anchor_to_a_shrunk_reloaded_file() {
+        // Companion to the test above: the reload target can come back shorter than
+        // before (e.g. lines were deleted) — the restored cursor/anchor must clamp to
+        // the new, smaller `raw_line_count` instead of pointing past its end.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        let mut full_cached = make_cached_diff_with_lines(120);
+        full_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, full_cached);
+
+        app.load_diff(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        app.full_file_cursor = 100;
+        app.full_file_anchor = Some(90);
+
+        // `reload_current_diff` itself never clears the cache — a real "file got
+        // shorter" reload always goes through `refresh_latest_state`, which calls
+        // `clear_diff_cache()` first (see its own call site) so the stale 120-line
+        // cache entry can't just get served back unchanged. Reproduce that here with a
+        // fresh, shorter cache entry under the same key.
+        app.clear_diff_cache();
+        let mut shrunk_cached = make_cached_diff_with_lines(10);
+        shrunk_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, shrunk_cached);
+
+        app.reload_current_diff().unwrap();
+
+        assert_eq!(app.full_file_cursor, 9);
+        assert_eq!(app.full_file_anchor, Some(9));
+    }
+
+    #[test]
+    fn reload_current_diff_drops_the_full_file_anchor_when_the_reload_lands_on_unavailable_content()
+    {
+        // review_10 Finding 1: a reload landing on binary/unmerged/missing/empty content
+        // (`full_file_copyable == false`, simulated here the same way
+        // `full_file_unavailable_content` produces it) has no real cursor for an old
+        // anchor to pair with. The anchor must be dropped, not just clamped — otherwise
+        // it survives as a hidden `Some(0)` (`saturating_sub(1)` on a 0 line count) that
+        // springs back into an unintended range the moment the file becomes real text
+        // again on a *later* reload, before the user ever pressed `v`.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        let mut full_cached = make_cached_diff_with_lines(120);
+        full_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, full_cached);
+
+        app.load_diff(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        app.full_file_cursor = 100;
+        app.full_file_anchor = Some(90);
+
+        // Reload lands on unavailable content: `full_file_copyable` stays false, as
+        // `make_cached_diff_with_lines` leaves it by default.
+        app.clear_diff_cache();
+        let unavailable_cached = make_cached_diff_with_lines(0);
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, unavailable_cached);
+
+        app.reload_current_diff().unwrap();
+
+        assert!(!app.full_file_copyable);
+        assert_eq!(app.full_file_anchor, None);
+
+        // The file becomes real text again on a later reload — the dropped anchor must
+        // not resurface; a fresh `v` press is required to start a new range.
+        app.clear_diff_cache();
+        let mut restored_cached = make_cached_diff_with_lines(120);
+        restored_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, restored_cached);
+
+        app.reload_current_diff().unwrap();
+
+        assert_eq!(app.full_file_anchor, None);
+    }
+
+    #[test]
+    fn reload_current_diff_drops_the_full_file_anchor_when_the_reload_lands_on_an_empty_file() {
+        // Companion to the unavailable-content test above, covering the other half of
+        // review_10 Finding 1's guard condition: `full_file_copyable` can stay `true` on
+        // an empty file (see `full_file_v_and_y_fall_back_to_unavailable_messages_for_an_empty_file`)
+        // while `raw_line_count == 0` — there's still no line for the anchor to pair
+        // with, so it must be dropped here too, not just when `full_file_copyable` itself
+        // is false.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        let mut full_cached = make_cached_diff_with_lines(120);
+        full_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, full_cached);
+
+        app.load_diff(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        app.full_file_cursor = 100;
+        app.full_file_anchor = Some(90);
+
+        // Reload lands on an empty (but copyable) file.
+        app.clear_diff_cache();
+        let mut empty_cached = make_cached_diff_with_lines(0);
+        empty_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, empty_cached);
+
+        app.reload_current_diff().unwrap();
+
+        assert!(app.full_file_copyable);
+        assert_eq!(app.raw_line_count, 0);
+        assert_eq!(app.full_file_anchor, None);
+    }
+
+    #[test]
+    fn reload_current_diff_normalizes_patch_mode_to_full_file_when_the_file_turns_untracked() {
+        // review_11 Finding 1: a file open in Patch mode can turn untracked out from
+        // under it (e.g. an external `git rm --cached` while DiffView is open), picked up
+        // by `refresh_trees()` right before this reload — normalize to `FullFile(Current)`
+        // the same way a fresh selection of that file would (`default_view_mode_for`),
+        // rather than leaving Patch mode displaying the untracked bat-rendering fallback
+        // under the wrong label, with `v` routed to InlineSelect instead of the full-file
+        // range-select untracked files are supposed to get.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        // Starts tracked and modified — Patch mode has real hunks to show.
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("file.txt".to_string(), ' ', 'M')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+        app.load_diff("file.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_scroll = 50;
+        app.patch_cursor = 55;
+        assert_eq!(app.diff_view_mode, DiffViewMode::Patch);
+
+        // The file turns untracked (simulates `refresh_trees()` picking up an external
+        // `git rm --cached`) — same node count, different status pair.
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("file.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            30,
+        );
+
+        app.reload_current_diff().unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        // A fresh entry into full-file view, not a same-mode reload — starts at the top
+        // rather than inheriting Patch mode's (diff_scroll=50, patch_cursor=55), which
+        // indexed an entirely different row space (patch display rows).
+        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.full_file_cursor, 0);
+    }
+
+    #[test]
+    fn reload_current_diff_leaves_an_explicitly_opened_full_file_view_alone_when_the_file_turns_untracked(
+    ) {
+        // Companion to the test above: if the user had already switched to full-file view
+        // themselves (`f`/`F`) before the file turned untracked, that choice must be left
+        // alone — the Patch-mode normalization only applies when the *current* mode is
+        // actually Patch.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("file.txt".to_string(), ' ', 'M')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            120,
+        );
+        app.load_diff(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        )
+        .unwrap();
+        app.full_file_cursor = 100;
+
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("file.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            120,
+        );
+
+        app.reload_current_diff().unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        // Same mode as before the reload — this is the ordinary same-mode reload path, so
+        // the cursor is preserved rather than reset to the top.
+        assert_eq!(app.full_file_cursor, 100);
     }
 
     #[test]
@@ -5275,6 +5783,7 @@ mod tests {
     #[test]
     fn follow_active_diff_cursor_reclaims_the_full_file_cursor_after_the_pane_shrinks() {
         let mut app = make_test_app();
+        app.focus = Focus::DiffView;
         app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         app.full_file_copyable = true;
         app.raw_line_count = 100;
@@ -5515,6 +6024,7 @@ mod tests {
     #[test]
     fn full_file_cursor_active_requires_full_file_mode_and_copyable_content() {
         let mut app = make_test_app();
+        app.focus = Focus::DiffView;
         app.raw_line_count = 10;
 
         app.diff_view_mode = DiffViewMode::Patch;
@@ -5534,8 +6044,31 @@ mod tests {
     }
 
     #[test]
+    fn full_file_cursor_active_requires_diff_view_focus() {
+        // review_9 Finding 2: an untracked/unstaged file's tree preview renders in
+        // full-file view (`default_view_mode_for`) while `Focus::Unstaged`/`Focus::Staged`
+        // is still active — without this check, that preview showed an apparently
+        // operable cursor that `j`/`k`/`v`/`y` (gated on `Focus::DiffView` in
+        // `handle_diff_key`) couldn't actually reach.
+        let mut app = make_test_app();
+        app.raw_line_count = 10;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+
+        app.focus = Focus::Unstaged;
+        assert!(!app.full_file_cursor_active());
+
+        app.focus = Focus::Staged;
+        assert!(!app.full_file_cursor_active());
+
+        app.focus = Focus::DiffView;
+        assert!(app.full_file_cursor_active());
+    }
+
+    #[test]
     fn full_file_search_highlight_uses_gutter_requires_a_nonzero_content_offset() {
         let mut app = make_test_app();
+        app.focus = Focus::DiffView;
         app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         app.full_file_copyable = true;
         app.raw_line_count = 10;
@@ -5641,6 +6174,285 @@ mod tests {
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.error_message.as_deref(), Some("No content to copy"));
+    }
+
+    #[test]
+    fn current_file_is_untracked_unstaged_is_true_only_for_an_unstaged_untracked_selection() {
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[
+                ("tracked.txt".to_string(), ' ', 'M'),
+                ("new.txt".to_string(), '?', '?'),
+            ],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.current_file = Some("new.txt".to_string());
+        assert!(app.current_file_is_untracked_unstaged());
+
+        app.current_file = Some("tracked.txt".to_string());
+        assert!(!app.current_file_is_untracked_unstaged());
+
+        // No file open at all.
+        app.current_file = None;
+        assert!(!app.current_file_is_untracked_unstaged());
+
+        // A Staged-pane selection never carries `is_untracked()` in the first place (see
+        // `refresh_trees`: `?` only ever lands in the Unstaged column), so this stays
+        // false there even for a same-named file.
+        app.current_file = Some("new.txt".to_string());
+        app.diff_origin = Some(TreePane::Staged);
+        assert!(!app.current_file_is_untracked_unstaged());
+    }
+
+    #[test]
+    fn default_view_mode_for_opens_untracked_files_directly_in_full_file_view() {
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[
+                ("tracked.txt".to_string(), ' ', 'M'),
+                ("new.txt".to_string(), '?', '?'),
+            ],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+
+        assert_eq!(
+            app.default_view_mode_for(TreePane::Unstaged, "tracked.txt"),
+            DiffViewMode::Patch
+        );
+        assert_eq!(
+            app.default_view_mode_for(TreePane::Unstaged, "new.txt"),
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+    }
+
+    #[test]
+    fn l_key_opens_an_untracked_file_directly_in_full_file_view_instead_of_patch() {
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.unstaged.move_cursor_to_first_file();
+        app.focus = Focus::Unstaged;
+
+        seed_cached_view(
+            &mut app,
+            "new.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            10,
+        );
+
+        app.tree_action_right().unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        assert_eq!(app.focus, Focus::DiffView);
+    }
+
+    #[test]
+    fn tree_preview_of_an_untracked_file_does_not_render_an_operable_full_file_cursor() {
+        // review_9 Finding 2: moving the tree cursor over an untracked file (no `l`/Enter,
+        // focus stays on the tree) loads it in full-file view for the preview
+        // (`default_view_mode_for`) — `full_file_cursor_active` must stay false here, since
+        // `j`/`k` in this state move the tree cursor, not this one (see
+        // `full_file_cursor_active_requires_diff_view_focus`).
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.unstaged.move_cursor_to_first_file();
+        app.focus = Focus::Unstaged;
+
+        seed_cached_view(
+            &mut app,
+            "new.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            10,
+        );
+
+        app.tree_load_preview_for_pane(TreePane::Unstaged);
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        assert_eq!(app.focus, Focus::Unstaged);
+        assert!(!app.full_file_cursor_active());
+    }
+
+    #[test]
+    fn selecting_an_untracked_file_resets_a_stale_full_file_cursor_and_anchor_from_a_previous_file()
+    {
+        // A file previously viewed in full-file view can leave `full_file_cursor`/
+        // `full_file_anchor` sitting deep inside its (possibly much longer) content.
+        // Opening an untracked file now goes straight to full-file view too, bypassing
+        // the patch-view step `toggle_full_file_view` normally resets these through —
+        // without `apply_loaded_diff_state`'s own reset, this stale cursor would carry
+        // over and could sit past the end of a much shorter file.
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.unstaged.move_cursor_to_first_file();
+        app.focus = Focus::Unstaged;
+        app.full_file_cursor = 400;
+        app.full_file_anchor = Some(350);
+
+        seed_cached_view(
+            &mut app,
+            "new.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            10,
+        );
+
+        app.tree_action_right().unwrap();
+
+        assert_eq!(app.full_file_cursor, 0);
+        assert_eq!(app.full_file_anchor, None);
+    }
+
+    #[test]
+    fn f_key_is_disabled_for_an_untracked_unstaged_file() {
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.focus = Focus::DiffView;
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.current_file = Some("new.txt".to_string());
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 10;
+        app.full_file_cursor = 4;
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .unwrap();
+
+        // `f` had no effect: still in full-file view, cursor untouched, no error raised
+        // either — the key is silently a no-op rather than a fallback to Patch.
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        assert_eq!(app.full_file_cursor, 4);
+        assert_eq!(app.error_message, None);
+    }
+
+    #[test]
+    fn pressing_shift_f_twice_on_an_untracked_unstaged_file_does_not_fall_through_to_patch_view() {
+        // `F` on `FullFile(Current)` first moves to `FullFile(Previous)` (which resolves
+        // to the unavailable-previous-side message for an untracked file — useful to see,
+        // so not blocked). A *second* `F` from there would normally toggle back to
+        // `Patch` (`toggle_full_file` matches `current == source`) — this is the other
+        // route besides a direct `f` press that must stay blocked for such a file, since
+        // it has no real patch view to land in.
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.focus = Focus::DiffView;
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.current_file = Some("new.txt".to_string());
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 10;
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Previous)
+        );
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Previous)
+        );
+    }
+
+    #[test]
+    fn f_key_still_toggles_to_patch_view_for_a_tracked_file() {
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("tracked.txt".to_string(), ' ', 'M')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.focus = Focus::DiffView;
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.current_file = Some("tracked.txt".to_string());
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+
+        seed_cached_view(
+            &mut app,
+            "tracked.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            10,
+        );
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.diff_view_mode, DiffViewMode::Patch);
+    }
+
+    #[test]
+    fn h_key_keeps_an_untracked_files_tree_preview_in_full_file_view() {
+        // Unlike a tracked file (see `full_file_h_clears_anchor_and_returns_to_patch_view`),
+        // an untracked file's patch view has nothing of its own to show — it's the same
+        // bat-rendered content full-file view shows (see `default_view_mode_for`) — so
+        // leaving the diff view back to the tree must not fall back to `Patch` here.
+        let mut app = make_test_app();
+        build_section(
+            &mut app.unstaged.all_nodes,
+            &[("new.txt".to_string(), '?', '?')],
+        );
+        rebuild_section_visible(&mut app.unstaged);
+        app.focus = Focus::DiffView;
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.current_file = Some("new.txt".to_string());
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+
+        seed_cached_view(
+            &mut app,
+            "new.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+            10,
+        );
+
+        app.leave_diff_view_to_tree().unwrap();
+
+        assert_eq!(
+            app.diff_view_mode,
+            DiffViewMode::FullFile(FullFileSource::Current)
+        );
+        assert_eq!(app.focus, Focus::Unstaged);
+        // review_9 Finding 2: this is exactly the state that used to render an
+        // apparently-operable cursor over the tree preview — `full_file_cursor_active`
+        // must stay false now that focus has left the diff pane.
+        assert!(!app.full_file_cursor_active());
     }
 
     #[test]
@@ -6223,19 +7035,24 @@ mod tests {
     #[test]
     fn toggle_full_file_view_clamps_preserved_scroll_to_shorter_side() {
         let mut app = make_test_app();
+        app.focus = Focus::DiffView;
         app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         app.current_file = Some("file.txt".to_string());
         app.diff_origin = Some(TreePane::Unstaged);
         app.diff_scroll = 40;
         app.full_file_cursor = 40;
 
-        seed_cached_view(
-            &mut app,
+        // Previous side is shorter but still available/copyable (unlike the
+        // review_11 Finding 2 unavailable-placeholder case below) — this is the "genuinely
+        // shorter real file" clamp path, distinct from `full_file_cursor_active() == false`.
+        let mut shorter_cached = make_cached_diff_with_lines(10);
+        shorter_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
             "file.txt",
             TreePane::Unstaged,
             DiffViewMode::FullFile(FullFileSource::Previous),
-            10,
         );
+        app.insert_cached_diff(key, shorter_cached);
 
         app.toggle_full_file_view(FullFileSource::Previous).unwrap();
 
@@ -6244,8 +7061,57 @@ mod tests {
     }
 
     #[test]
+    fn toggle_full_file_view_preserves_cursor_and_scroll_unclamped_across_an_unavailable_side() {
+        // review_11 Finding 2: switching to an unavailable placeholder side (binary/
+        // unmerged/missing/empty) used to clamp the outgoing (cursor, scroll) down to the
+        // placeholder's own tiny line count (effectively (0, 0)) before that state was
+        // ever restored — so switching back discarded the original deep position instead
+        // of restoring it. The outgoing position must survive the round trip unclamped.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.current_file = Some("file.txt".to_string());
+        app.diff_origin = Some(TreePane::Unstaged);
+        app.diff_scroll = 91;
+        app.full_file_cursor = 100;
+
+        // Previous side is unavailable (not copyable) — `seed_cached_view`'s default.
+        seed_cached_view(
+            &mut app,
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Previous),
+            0,
+        );
+
+        app.toggle_full_file_view(FullFileSource::Previous).unwrap();
+
+        assert!(!app.full_file_copyable);
+        // False because the placeholder isn't copyable, not because of focus — focus is
+        // `DiffView` throughout this test, isolating the assertion to the condition this
+        // test actually exercises.
+        assert!(!app.full_file_cursor_active());
+
+        // Current side becomes available again.
+        let mut current_cached = make_cached_diff_with_lines(500);
+        current_cached.full_file_copyable = true;
+        let key = app.build_diff_cache_key(
+            "file.txt",
+            TreePane::Unstaged,
+            DiffViewMode::FullFile(FullFileSource::Current),
+        );
+        app.insert_cached_diff(key, current_cached);
+
+        app.toggle_full_file_view(FullFileSource::Current).unwrap();
+
+        assert_eq!(app.diff_scroll, 91);
+        assert_eq!(app.full_file_cursor, 100);
+    }
+
+    #[test]
     fn toggle_full_file_view_keeps_cursor_visible_when_switching_into_a_shorter_file() {
         let mut app = make_test_app();
+        app.focus = Focus::DiffView;
         app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
         app.current_file = Some("file.txt".to_string());
         app.diff_origin = Some(TreePane::Unstaged);
