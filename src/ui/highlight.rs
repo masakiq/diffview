@@ -3,9 +3,14 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 
+/// Background color a search match's span always carries, exposed so `ui/diff.rs`'s
+/// cursor/tint overlays can recognize and preserve it instead of overwriting it — see
+/// `tint_line_bg`'s doc comment.
+pub const SEARCH_HIGHLIGHT_BG: Color = Color::Yellow;
+
 fn search_highlight_style() -> Style {
     Style::default()
-        .bg(Color::Yellow)
+        .bg(SEARCH_HIGHLIGHT_BG)
         .add_modifier(Modifier::BOLD)
 }
 

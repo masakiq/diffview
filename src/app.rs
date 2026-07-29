@@ -831,7 +831,7 @@ impl App {
 
     pub fn diff_help_text(&self) -> String {
         let mut ops =
-            "[j/k]scroll [Ctrl-U/D]jump [h]back [c]copy-path [/]search [n/N]match [r]refresh [q]quit"
+            "[j/k]move [Ctrl-U/D]jump [h]back [c]copy-path [/]search [n/N]match [r]refresh [q]quit"
                 .to_string();
 
         if self.diff_view_mode == DiffViewMode::Patch {
@@ -1047,6 +1047,17 @@ impl App {
         // `load_diff` and this same restore step. Movement made while in full-file view never
         // reaches this: `remember_current_diff_scroll` only snapshots patch view's own state.
         self.patch_cursor = saved_cursor.min(self.display_line_count.saturating_sub(1));
+        // `apply_loaded_diff_state` (already run by this point in `load_diff`) unconditionally
+        // reset `hunk_cursor` to 0 — realign it with wherever the restored cursor actually
+        // landed, or the hunk title/`]`/`[` jump target would show hunk 1 even when the
+        // cursor is sitting deep inside a later one.
+        self.sync_hunk_cursor_from_patch_cursor();
+        // Neither `saved_scroll` nor the cursor just restored above were validated
+        // against the *current* `diff_pane_height` — if the pane shrank while a
+        // different file was shown, restoring this file's own (scroll, cursor) pair can
+        // still leave the cursor outside the now-smaller viewport until the next
+        // cursor-moving key re-clamps it (review_8 Finding 3-A).
+        self.follow_active_diff_cursor();
     }
 
     fn touch_diff_cache_key(&mut self, key: DiffCacheKey) {
@@ -1648,6 +1659,27 @@ impl App {
             } else {
                 self.diff_view_mode
             };
+            // Before reflow: capture the patch cursor's semantic file line — and which
+            // side (Current/Previous) it was found on — so it can be re-anchored after
+            // reload instead of restored by raw index. Delta's side-by-side wrap can
+            // renumber which display row a given index means (e.g. a pane-width change),
+            // so a plain index restore can silently land on an unrelated file line
+            // (review_8 Finding 5). Falling back to Previous when Current comes back
+            // empty covers a cursor parked on a removed-only row, which only carries an
+            // old-side number.
+            let delta_anchor = if self.tool == DiffTool::Delta && view_mode == DiffViewMode::Patch {
+                let viewport_offset = prev_patch_cursor.saturating_sub(prev_scroll);
+                self.delta_patch_top_line_target(FullFileSource::Current)
+                    .map(|line| (line, FullFileSource::Current))
+                    .or_else(|| {
+                        self.delta_patch_top_line_target(FullFileSource::Previous)
+                            .map(|line| (line, FullFileSource::Previous))
+                    })
+                    .map(|(line, side)| (line, side, viewport_offset))
+            } else {
+                None
+            };
+
             self.load_diff(&path, pane, view_mode)?;
             let scroll_line_count = if self.focus == Focus::InlineSelect {
                 self.raw_line_count
@@ -1663,7 +1695,18 @@ impl App {
             if view_mode == DiffViewMode::Patch {
                 self.patch_cursor =
                     prev_patch_cursor.min(self.display_line_count.saturating_sub(1));
+                if let Some((line, side, viewport_offset)) = delta_anchor {
+                    if let Some(new_row) = self.delta_display_row_for_line(line, side) {
+                        self.patch_cursor = new_row;
+                        self.diff_scroll = new_row.saturating_sub(viewport_offset);
+                    }
+                }
             }
+            // The reconciliation above overwrites whatever `restore_saved_diff_scroll`
+            // (called inside `load_diff`) already clamped into view — re-clamp once more
+            // against the current `diff_pane_height` so a reload never leaves the
+            // always-on cursor rendered off-screen (review_8 Finding 3-A).
+            self.follow_active_diff_cursor();
         }
         Ok(())
     }
@@ -1886,6 +1929,10 @@ impl App {
                 self.tree_linear_position(pane, current_node_idx)
             }
             SearchScope::DiffView if self.full_file_cursor_active() => self.full_file_cursor,
+            // Patch view's own always-on cursor is the "current position" search advances
+            // from, not wherever the viewport happens to be scrolled to — otherwise `n`/`N`
+            // can jump backward relative to where the cursor visibly sits.
+            SearchScope::DiffView if self.patch_cursor_active() => self.patch_cursor,
             SearchScope::DiffView => self.diff_scroll,
             SearchScope::InlineSelect => self.diff_cursor,
         }
@@ -1907,6 +1954,15 @@ impl App {
                 // viewport-follow helper derive the scroll position from it.
                 self.full_file_cursor = target.min(self.raw_line_count.saturating_sub(1));
                 self.follow_full_file_cursor();
+            }
+            SearchScope::DiffView if self.patch_cursor_active() => {
+                // `target` is a display-row index (searchable_lines_for_scope's plain
+                // DiffView branch searches `cached_display_text`/`display_diff`), the same
+                // row space `patch_cursor` occupies — move the cursor itself, not just the
+                // viewport, so it doesn't visually separate from the match it just jumped to.
+                self.patch_cursor = target.min(self.display_line_count.saturating_sub(1));
+                self.follow_patch_cursor();
+                self.sync_hunk_cursor_from_patch_cursor();
             }
             SearchScope::DiffView => {
                 self.diff_scroll = target.min(self.display_line_count.saturating_sub(1));
@@ -2070,12 +2126,21 @@ impl App {
             let size = terminal.size()?;
             let next_diff_width = self.compute_diff_pane_width(size.width);
             let diff_width_changed = self.diff_pane_width != next_diff_width;
+            let next_diff_height = size.height.saturating_sub(3) as usize;
+            let diff_height_changed = self.diff_pane_height != next_diff_height;
 
             self.diff_pane_width = next_diff_width;
-            self.diff_pane_height = size.height.saturating_sub(3) as usize;
+            self.diff_pane_height = next_diff_height;
 
             if diff_width_changed && self.tool == DiffTool::Delta && self.current_file.is_some() {
                 let _ = self.reload_current_diff();
+            }
+            // A shrunk pane height isn't otherwise re-validated against either always-on
+            // cursor's row until the next cursor-moving key press — without this, a cursor
+            // left near the bottom of a tall pane can end up rendered off-screen right
+            // after a resize, with nothing on screen to show it's still there.
+            if diff_height_changed {
+                self.follow_active_diff_cursor();
             }
 
             self.flush_pending_tree_preview_if_due();
@@ -2615,6 +2680,31 @@ impl App {
         None
     }
 
+    /// Inverse of `delta_patch_top_line_target`: the display row whose gutter shows
+    /// `target_line` on `source`'s side. Used by `reload_current_diff` to re-anchor
+    /// `patch_cursor` after a Delta reflow (e.g. a pane-width change) — the same numeric
+    /// row index can mean a different file line once delta rewraps its side-by-side
+    /// output, so restoring `patch_cursor` by index alone can silently land it on an
+    /// unrelated row.
+    fn delta_display_row_for_line(
+        &self,
+        target_line: usize,
+        source: FullFileSource,
+    ) -> Option<usize> {
+        self.display_diff
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                let stripped = strip_ansi_codes(line);
+                let (old_num, new_num) = parse_delta_side_by_side_gutter(&stripped)?;
+                let candidate = match source {
+                    FullFileSource::Current => new_num,
+                    FullFileSource::Previous => old_num,
+                };
+                (candidate? as usize == target_line).then_some(row)
+            })
+    }
+
     /// Whether the always-on full-file cursor applies right now: full-file view showing
     /// real, copyable content — not patch view, not an "unavailable" placeholder
     /// (binary/unmerged/missing file on the requested side), and not an empty file (no
@@ -2779,6 +2869,7 @@ impl App {
                     if self.patch_cursor + 1 < line_count {
                         self.patch_cursor += 1;
                         self.follow_patch_cursor();
+                        self.sync_hunk_cursor_from_patch_cursor();
                     }
                 } else if self.diff_scroll + 1 < line_count {
                     self.diff_scroll += 1;
@@ -2794,6 +2885,7 @@ impl App {
                     if self.patch_cursor > 0 {
                         self.patch_cursor -= 1;
                         self.follow_patch_cursor();
+                        self.sync_hunk_cursor_from_patch_cursor();
                     }
                 } else if self.diff_scroll > 0 {
                     self.diff_scroll -= 1;
@@ -2808,6 +2900,7 @@ impl App {
                     self.patch_cursor =
                         (self.patch_cursor + half_page).min(line_count.saturating_sub(1));
                     self.follow_patch_cursor();
+                    self.sync_hunk_cursor_from_patch_cursor();
                 } else {
                     self.diff_scroll =
                         (self.diff_scroll + half_page).min(line_count.saturating_sub(1));
@@ -2820,6 +2913,7 @@ impl App {
                 } else if self.patch_cursor_active() {
                     self.patch_cursor = self.patch_cursor.saturating_sub(half_page);
                     self.follow_patch_cursor();
+                    self.sync_hunk_cursor_from_patch_cursor();
                 } else {
                     self.diff_scroll = self.diff_scroll.saturating_sub(half_page);
                 }
@@ -2833,6 +2927,7 @@ impl App {
                     } else if self.patch_cursor_active() {
                         self.patch_cursor = 0;
                         self.follow_patch_cursor();
+                        self.sync_hunk_cursor_from_patch_cursor();
                     } else {
                         self.diff_scroll = 0;
                     }
@@ -2847,6 +2942,7 @@ impl App {
                 } else if self.patch_cursor_active() {
                     self.patch_cursor = line_count.saturating_sub(1);
                     self.follow_patch_cursor();
+                    self.sync_hunk_cursor_from_patch_cursor();
                 } else {
                     self.diff_scroll = line_count.saturating_sub(1);
                 }
@@ -2906,6 +3002,7 @@ impl App {
                         } else {
                             self.diff_scroll
                         };
+                        self.sync_hunk_cursor();
                         self.status_message =
                             Some("Inline select: j/k move  u apply  v/h exit".to_string());
                     }
@@ -2992,6 +3089,19 @@ impl App {
             self.diff_scroll = self.patch_cursor;
         } else if self.patch_cursor >= self.diff_scroll + self.diff_pane_height {
             self.diff_scroll = self.patch_cursor + 1 - self.diff_pane_height;
+        }
+    }
+
+    /// Re-clamps whichever always-on cursor is active into the current viewport. Called
+    /// whenever `diff_pane_height` changes (a terminal resize): neither `full_file_cursor`
+    /// nor `patch_cursor` is otherwise re-validated against a shrunk pane height until the
+    /// next cursor-moving key press, so a cursor left near the bottom of a tall pane can
+    /// silently render off-screen right after the resize.
+    fn follow_active_diff_cursor(&mut self) {
+        if self.full_file_cursor_active() {
+            self.follow_full_file_cursor();
+        } else if self.patch_cursor_active() {
+            self.follow_patch_cursor();
         }
     }
 
@@ -3090,6 +3200,10 @@ impl App {
             KeyCode::Char('[') => self.jump_prev_hunk(),
             KeyCode::Char('v') => {
                 self.focus = Focus::DiffView;
+                // `diff_scroll` may have moved far from `patch_cursor` while InlineSelect
+                // was scrolling independently — re-follow so the always-on patch cursor
+                // doesn't return off-screen (review_8 Finding 3-B).
+                self.follow_patch_cursor();
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.focus = self
@@ -3108,6 +3222,41 @@ impl App {
                 self.hunk_cursor = new_hunk;
             }
         }
+    }
+
+    /// Same realignment as `sync_hunk_cursor`, but for `patch_cursor` instead of
+    /// `diff_cursor` — keeps the hunk title and `]`/`[` jump target aligned with whichever
+    /// hunk the always-on patch cursor actually sits inside, for every path that moves or
+    /// restores it (plain `j`/`k`/half-page/`gg`/`G`, search, and the scroll/cursor restore
+    /// on entering patch view). Only valid under `--tool raw`, where `patch_cursor`'s
+    /// display-row space and `line_infos`' raw-line space coincide (same precondition the
+    /// `'v'` key's `patch_cursor`-as-`diff_cursor` handoff already relies on) — a no-op for
+    /// delta/difftastic, which have no equivalent display-row-to-hunk mapping today, so
+    /// `hunk_cursor` there keeps its prior (still only approximately accurate) value.
+    fn sync_hunk_cursor_from_patch_cursor(&mut self) {
+        if self.tool != DiffTool::Raw {
+            return;
+        }
+        if self.file_diff.hunks.is_empty() {
+            return;
+        }
+        if let Some(info) = self.line_infos.get(self.patch_cursor) {
+            if let Some(new_hunk) = info.hunk_idx {
+                self.hunk_cursor = new_hunk;
+                return;
+            }
+        }
+        // `patch_cursor` sits on a row with no hunk of its own (pre-first-hunk metadata,
+        // `gg`'s row 0, a hunk header line, or past the end of `line_infos`) — leaving
+        // `hunk_cursor` at its previous value would make `]`/`[` and the hunk title
+        // disagree with where a cursor move from here actually goes. Realign to the
+        // nearest hunk at or after the cursor, matching the direction `]` would jump;
+        // fall back to the last hunk if the cursor is past every hunk's metadata.
+        let next_hunk = self
+            .line_infos
+            .get(self.patch_cursor..)
+            .and_then(|rest| rest.iter().find_map(|info| info.hunk_idx));
+        self.hunk_cursor = next_hunk.unwrap_or(self.file_diff.hunks.len() - 1);
     }
 
     fn apply_current_line(&mut self) -> Result<()> {
@@ -4334,6 +4483,170 @@ mod tests {
     }
 
     #[test]
+    fn restore_saved_diff_scroll_follows_the_cursor_into_a_shrunk_pane() {
+        // File A's cursor was left near the bottom of a 20-row-tall pane; the pane then
+        // shrinks to 5 rows while file B is shown. Switching back to file A restores its
+        // saved (scroll, cursor) pair as-is — without re-following the always-on cursor
+        // into the now-smaller viewport, it would render off-screen until the next
+        // cursor-moving key (review_8 Finding 3-A).
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        seed_cached_view(
+            &mut app,
+            "file-a.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+        seed_cached_view(
+            &mut app,
+            "file-b.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            120,
+        );
+
+        app.diff_pane_height = 20;
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_scroll = 0;
+        app.patch_cursor = 15;
+
+        // Switching away remembers file-a's (scroll, cursor) as left above.
+        app.load_diff("file-b.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_pane_height = 5;
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+
+        assert_eq!(app.patch_cursor, 15);
+        assert!(app.diff_scroll <= app.patch_cursor);
+        assert!(app.patch_cursor < app.diff_scroll + app.diff_pane_height);
+    }
+
+    /// A row with a search match, plus a non-matching span on the same row — shared by
+    /// the three composition tests below, one per `ui::diff` overlay that calls
+    /// `tint_line_bg` (review_8 Finding 1: the overlay must preserve the match's own
+    /// background, not just `tint_line_bg` in isolation).
+    fn row_with_a_search_match() -> Text<'static> {
+        Text::from(vec![
+            Line::from(Span::raw("no match here")),
+            Line::from(vec![
+                Span::raw("has a "),
+                Span::styled(
+                    "needle",
+                    ratatui::style::Style::default()
+                        .bg(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::raw(" in it"),
+            ]),
+            Line::from(Span::raw("no match either")),
+        ])
+    }
+
+    #[test]
+    fn apply_patch_cursor_preserves_a_search_matchs_yellow_background() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.display_line_count = 3;
+        app.patch_cursor = 1;
+
+        let overlaid = crate::ui::diff::apply_patch_cursor(row_with_a_search_match(), &app, 40);
+
+        let cursor_line = &overlaid.lines[1];
+        let match_span = cursor_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "needle")
+            .unwrap();
+        assert_eq!(
+            match_span.style.bg,
+            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+        );
+
+        let non_match_span = cursor_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "has a ")
+            .unwrap();
+        assert_eq!(
+            non_match_span.style.bg,
+            Some(ratatui::style::Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn apply_full_file_cursor_preserves_a_search_matchs_yellow_background() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 3;
+        app.full_file_cursor = 1;
+
+        let overlaid = crate::ui::diff::apply_full_file_cursor(row_with_a_search_match(), &app, 40);
+
+        let cursor_line = &overlaid.lines[1];
+        let match_span = cursor_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "needle")
+            .unwrap();
+        assert_eq!(
+            match_span.style.bg,
+            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+        );
+
+        let non_match_span = cursor_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "has a ")
+            .unwrap();
+        assert_eq!(
+            non_match_span.style.bg,
+            Some(ratatui::style::Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn apply_full_file_line_bg_preserves_a_search_matchs_yellow_background() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_content_offset = 0;
+        app.full_file_highlight_lines = vec![2]; // 1-based file line 2 == row 1 (offset 0)
+
+        let overlaid =
+            crate::ui::diff::apply_full_file_line_bg(row_with_a_search_match(), &app, 40);
+
+        let tinted_line = &overlaid.lines[1];
+        let match_span = tinted_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "needle")
+            .unwrap();
+        assert_eq!(
+            match_span.style.bg,
+            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+        );
+
+        // The added/removed tint color itself is private to `ui::diff` — confirming it's
+        // some color other than the search highlight's is enough to show the tint was
+        // actually applied to the non-matching span.
+        let non_match_span = tinted_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "has a ")
+            .unwrap();
+        assert!(non_match_span.style.bg.is_some());
+        assert_ne!(
+            non_match_span.style.bg,
+            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+        );
+    }
+
+    #[test]
     fn reload_current_diff_preserves_the_patch_cursor_across_a_refresh() {
         let mut app = make_test_app();
         seed_cached_view(
@@ -4358,6 +4671,63 @@ mod tests {
 
         assert_eq!(app.diff_scroll, 2);
         assert_eq!(app.patch_cursor, 8);
+    }
+
+    #[test]
+    fn reload_current_diff_reanchors_the_patch_cursor_after_a_delta_reflow() {
+        // Delta's side-by-side wrap can renumber which display row a given numeric index
+        // means when the pane width changes. These hand-written "wide" and "narrow"
+        // gutter fixtures simulate exactly that: file line 2 sits on display row 1 in
+        // `wide`, but a wrapped continuation row pushes it down to row 2 in `narrow`. A
+        // plain index restore would leave `patch_cursor` on that continuation row instead
+        // of file line 2 (review_8 Finding 5). This only exercises the re-anchor lookup
+        // via fixtures — it does not run the real `delta` binary or its actual reflow.
+        let mut app = make_test_app();
+        app.tool = DiffTool::Delta;
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.diff_pane_height = 20;
+
+        let wide = "│ 1  │old line 1  │ 1  │new line 1  \n\
+│ 2  │old line 2  │ 2  │new line 2  \n\
+│ 3  │old line 3  │ 3  │new line 3  \n";
+        let narrow = "│ 1  │old line 1  │ 1  │new line 1  \n\
+│    │            │    │continuation\n\
+│ 2  │old line 2  │ 2  │new line 2  \n\
+│ 3  │old line 3  │ 3  │new line 3  \n";
+
+        app.diff_pane_width = 80;
+        let mut wide_cached = make_cached_diff_with_lines(0);
+        wide_cached.display_diff = wide.to_string();
+        wide_cached.raw_diff = wide.to_string();
+        wide_cached.display_line_count = wide.lines().count();
+        wide_cached.raw_line_count = wide.lines().count();
+        let wide_key =
+            app.build_diff_cache_key("file.txt", TreePane::Unstaged, DiffViewMode::Patch);
+        app.insert_cached_diff(wide_key, wide_cached);
+
+        app.load_diff("file.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        // patch_cursor sits on display row 1 ("new line 2"), one row below scroll's top.
+        app.diff_scroll = 0;
+        app.patch_cursor = 1;
+
+        app.diff_pane_width = 40;
+        let mut narrow_cached = make_cached_diff_with_lines(0);
+        narrow_cached.display_diff = narrow.to_string();
+        narrow_cached.raw_diff = narrow.to_string();
+        narrow_cached.display_line_count = narrow.lines().count();
+        narrow_cached.raw_line_count = narrow.lines().count();
+        let narrow_key =
+            app.build_diff_cache_key("file.txt", TreePane::Unstaged, DiffViewMode::Patch);
+        app.insert_cached_diff(narrow_key, narrow_cached);
+
+        app.reload_current_diff().unwrap();
+
+        // File line 2 now lands on row 2 in the reflowed (narrow) display — the cursor
+        // re-anchors there, one row below scroll, preserving the same on-screen position.
+        assert_eq!(app.patch_cursor, 2);
+        assert_eq!(app.diff_scroll, 1);
     }
 
     #[test]
@@ -4690,6 +5060,52 @@ mod tests {
     }
 
     #[test]
+    fn inline_select_v_exit_follows_patch_cursor_back_into_view() {
+        // While InlineSelect scrolled far from where patch_cursor was left, exiting back
+        // to Patch view (`v`) must re-follow the always-on patch cursor into the
+        // viewport — otherwise it renders off-screen until the next cursor-moving key
+        // (review_8 Finding 3-B).
+        let mut app = make_test_app();
+        app.focus = Focus::InlineSelect;
+        app.diff_pane_height = 10;
+        app.patch_cursor = 5;
+        // InlineSelect scrolled independently, far past where patch_cursor sits.
+        app.diff_scroll = 90;
+        app.diff_cursor = 95;
+        app.raw_line_count = 200;
+
+        app.handle_inline_select_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.focus, Focus::DiffView);
+        assert!(app.diff_scroll <= app.patch_cursor);
+        assert!(app.patch_cursor < app.diff_scroll + app.diff_pane_height);
+    }
+
+    #[test]
+    fn patch_view_search_advances_from_the_patch_cursor_not_the_viewport_scroll() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.display_diff = "aaa\nneedle\nccc\nddd\neee\nneedle\n".to_string();
+        app.display_line_count = 6;
+        // Viewport scrolled to the top, but the cursor itself sits at row 3 — well past
+        // the first match. If search used `diff_scroll` (0) as "current position" instead
+        // of the cursor, it would jump to the match at row 1 instead of row 5.
+        app.diff_scroll = 0;
+        app.patch_cursor = 3;
+
+        app.apply_confirmed_search(SearchScope::DiffView, "needle".to_string());
+        assert_eq!(app.patch_cursor, 5);
+
+        // `n` (navigate_search) must also advance from the cursor's new position (5), not
+        // from `diff_scroll` — under the old bug `diff_scroll` alone tracked search jumps
+        // while `patch_cursor` never moved, so this would still show `patch_cursor == 3`.
+        app.navigate_search(true);
+        assert_eq!(app.patch_cursor, 1);
+    }
+
+    #[test]
     fn jump_next_hunk_moves_the_patch_cursor_along_with_the_viewport() {
         let mut app = make_test_app();
         app.focus = Focus::DiffView;
@@ -4707,6 +5123,170 @@ mod tests {
         let second_hunk_row = raw.lines().position(|l| l == "@@ -20,2 +20,2 @@").unwrap();
         assert_eq!(app.patch_cursor, second_hunk_row);
         assert_eq!(app.diff_scroll, second_hunk_row);
+    }
+
+    #[test]
+    fn patch_cursor_movement_keeps_hunk_cursor_aligned_so_bracket_keys_dont_jump_backward() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Raw;
+        app.diff_pane_height = 20;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new\n@@ -20,2 +20,2 @@\n context2\n-old2\n+new2\n@@ -40,2 +40,2 @@\n context3\n-old3\n+new3\n";
+        app.file_diff = parse_diff(raw);
+        app.display_diff = raw.to_string();
+        app.line_infos = App::build_patch_line_infos(raw);
+        app.display_line_count = raw.lines().count();
+        let third_hunk_row = raw.lines().position(|l| l == "@@ -40,2 +40,2 @@").unwrap();
+        let second_hunk_row = raw.lines().position(|l| l == "@@ -20,2 +20,2 @@").unwrap();
+        let first_hunk_row = raw.lines().position(|l| l == "@@ -1,2 +1,2 @@").unwrap();
+        app.patch_cursor = first_hunk_row;
+        app.diff_scroll = 0;
+        app.hunk_cursor = 0;
+
+        // Move the cursor with plain `j`, one row at a time, all the way from the first
+        // hunk into the third — the same thing a reader does while reviewing a diff.
+        for _ in first_hunk_row..third_hunk_row {
+            app.handle_diff_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+                .unwrap();
+        }
+        assert_eq!(app.patch_cursor, third_hunk_row);
+
+        // `[` (previous hunk) must jump to the second hunk — the one right before wherever
+        // the cursor actually is. Under the bug, `hunk_cursor` never left 0 during the `j`
+        // presses above, so `[` would find `hunk_cursor == 0` and do nothing, landing back
+        // on the *first* hunk instead — a jump backward past the second hunk entirely, even
+        // though the cursor had visibly moved forward through it.
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.patch_cursor, second_hunk_row);
+    }
+
+    #[test]
+    fn gg_from_inside_a_later_hunk_realigns_hunk_cursor_to_the_next_hunk_not_stale() {
+        // `gg` lands `patch_cursor` on row 0, which is `diff --git` metadata — no hunk of
+        // its own (`line_infos[0].hunk_idx == None`). Leaving `hunk_cursor` at its stale
+        // value (2, from before `gg`) would make `]` do nothing (already "last hunk") and
+        // the title still read "hunk 3/3", even though the cursor visibly jumped to the
+        // very top of the file (review_8 Finding 2). Realigning to the *next* hunk at or
+        // after the cursor means `hunk_cursor == 0` after `gg`, and `]` from there moves
+        // forward to the second hunk — never backward.
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Raw;
+        app.diff_pane_height = 20;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new\n@@ -20,2 +20,2 @@\n context2\n-old2\n+new2\n@@ -40,2 +40,2 @@\n context3\n-old3\n+new3\n";
+        app.file_diff = parse_diff(raw);
+        app.display_diff = raw.to_string();
+        app.line_infos = App::build_patch_line_infos(raw);
+        app.display_line_count = raw.lines().count();
+        let third_hunk_row = raw.lines().position(|l| l == "@@ -40,2 +40,2 @@").unwrap();
+        let second_hunk_row = raw.lines().position(|l| l == "@@ -20,2 +20,2 @@").unwrap();
+        app.patch_cursor = third_hunk_row;
+        app.diff_scroll = 0;
+        app.hunk_cursor = 2;
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.patch_cursor, 0);
+        assert_eq!(app.hunk_cursor, 0);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.patch_cursor, second_hunk_row);
+    }
+
+    #[test]
+    fn returning_to_patch_view_realigns_the_hunk_cursor_with_the_restored_patch_cursor() {
+        let mut app = make_test_app();
+        app.tool = DiffTool::Raw;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new\n@@ -20,2 +20,2 @@\n context2\n-old2\n+new2\n@@ -40,2 +40,2 @@\n context3\n-old3\n+new3\n";
+        let file_diff = parse_diff(raw);
+        let line_infos = App::build_patch_line_infos(raw);
+        let third_hunk_row = raw.lines().position(|l| l == "@@ -40,2 +40,2 @@").unwrap();
+
+        let key = app.build_diff_cache_key("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch);
+        app.insert_cached_diff(
+            key,
+            CachedDiff {
+                raw_diff: raw.to_string(),
+                display_diff: raw.to_string(),
+                file_diff,
+                line_infos,
+                display_line_count: raw.lines().count(),
+                raw_line_count: raw.lines().count(),
+                cached_display_text: None,
+                content_annotation: None,
+                full_file_copyable: false,
+                full_file_content_offset: 0,
+                full_file_highlight_lines: Vec::new(),
+            },
+        );
+        seed_cached_view(
+            &mut app,
+            "file-b.txt",
+            TreePane::Unstaged,
+            DiffViewMode::Patch,
+            30,
+        );
+
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.diff_scroll = 0;
+        app.patch_cursor = third_hunk_row;
+        app.hunk_cursor = 2; // as if the cursor had genuinely been moved there via `j`
+
+        // Switch away — `load_diff` remembers file-a's (scroll, cursor) — then back.
+        // `apply_loaded_diff_state` unconditionally resets `hunk_cursor` to 0 on every
+        // load; without realigning it from the restored `patch_cursor`, returning to
+        // file-a would show hunk 1's title/jump-target even though the cursor is
+        // restored to the third hunk.
+        app.load_diff("file-b.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+        app.load_diff("file-a.txt", TreePane::Unstaged, DiffViewMode::Patch)
+            .unwrap();
+
+        assert_eq!(app.patch_cursor, third_hunk_row);
+        assert_eq!(app.hunk_cursor, 2);
+    }
+
+    #[test]
+    fn follow_active_diff_cursor_reclaims_the_patch_cursor_after_the_pane_shrinks() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.display_line_count = 100;
+        app.diff_scroll = 40;
+        app.patch_cursor = 55;
+        // A terminal resize shrinks the pane well below where the cursor sits on screen
+        // (55 - 40 = 15 rows down) without moving `diff_scroll` or `patch_cursor` at all.
+        app.diff_pane_height = 5;
+
+        app.follow_active_diff_cursor();
+
+        assert_eq!(app.diff_scroll, 51);
+        assert!(app.patch_cursor < app.diff_scroll + app.diff_pane_height);
+    }
+
+    #[test]
+    fn follow_active_diff_cursor_reclaims_the_full_file_cursor_after_the_pane_shrinks() {
+        let mut app = make_test_app();
+        app.diff_view_mode = DiffViewMode::FullFile(FullFileSource::Current);
+        app.full_file_copyable = true;
+        app.raw_line_count = 100;
+        app.full_file_content_offset = 3;
+        app.diff_scroll = 40;
+        app.full_file_cursor = 55;
+        app.diff_pane_height = 5;
+
+        app.follow_active_diff_cursor();
+
+        let cursor_display_row = app.full_file_content_offset + app.full_file_cursor;
+        assert!(cursor_display_row < app.diff_scroll + app.diff_pane_height);
     }
 
     #[test]

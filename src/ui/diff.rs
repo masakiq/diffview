@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, DiffTool, DiffViewMode, Focus, FullFileSource};
-use crate::ui::highlight::{highlight_full_file_text, highlight_text};
+use crate::ui::highlight::{highlight_full_file_text, highlight_text, SEARCH_HIGHLIGHT_BG};
 
 /// Background tint for full-file view's added/removed line highlight, matching delta's own
 /// default `plus-color`/`minus-color` so patch view (under `--tool delta`) and full-file view
@@ -96,9 +96,16 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             .clone()
             .unwrap_or_else(|| build_raw_diff_text(app, content))
     };
-    let text = apply_full_file_line_bg(text, app, inner_area.width);
-    let text = apply_full_file_cursor(text, app, inner_area.width);
-    let text = apply_patch_cursor(text, app, inner_area.width);
+    // Search highlighting runs *before* the cursor/diff-tint overlays below, not after —
+    // `apply_full_file_line_bg`/`apply_full_file_cursor`/`apply_patch_cursor` each pad their
+    // tinted rows with trailing blank spans out to the pane width (`tint_line_bg`), and a
+    // query search running afterward would scan those padding spans too, occasionally
+    // matching decoration that isn't part of any real content (`n`/`N` can never navigate to
+    // such a match, since it doesn't exist in `searchable_lines_for_scope`'s search text).
+    // Highlighting first, then tinting, still shows a match on a tinted row — the tint call's
+    // `Span::bg` only replaces the background, so a match's `search_highlight_style` modifier
+    // (bold) survives being tinted over, even though its yellow background doesn't.
+    //
     // Full-file search matches only real file content (App::searchable_lines_for_scope),
     // not bat's line-number gutter or border rows — the highlight must skip those too, or
     // a query that happens to also appear there would visually highlight a "match" `n`/`N`
@@ -114,6 +121,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     } else {
         highlight_text(text, app.diff_search_query())
     };
+    let text = apply_full_file_line_bg(text, app, inner_area.width);
+    let text = apply_full_file_cursor(text, app, inner_area.width);
+    let text = apply_patch_cursor(text, app, inner_area.width);
     let text = window_text_rows(text, app.diff_scroll, inner_area.height as usize);
     let para = Paragraph::new(text);
     f.render_widget(para, inner_area);
@@ -165,12 +175,27 @@ fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
 /// Recolors every span's background to `bg` and pads with blank, `bg`-styled cells out
 /// to `width`, so the tint reaches the right edge of the pane instead of stopping at
 /// the end of the line's own text.
+///
+/// A span already carrying `SEARCH_HIGHLIGHT_BG` (a search match, applied earlier in
+/// `render`'s pipeline) keeps its own background instead of being overwritten — without
+/// this, every cursor/diff-tint overlay (added/removed tint, full-file cursor, patch
+/// cursor) would silently erase a match's yellow highlight on any row it also covers,
+/// leaving only its bold modifier — indistinguishable from the rest of that tinted row,
+/// which is also bolded on the cursor's own line. Padding cells are synthetic (never part
+/// of a match) and always get `bg` unconditionally.
 fn tint_line_bg<'a>(spans: Vec<Span<'a>>, bg: Color, width: usize) -> Vec<Span<'a>> {
     let mut spans: Vec<Span<'a>> = spans
         .into_iter()
-        .map(|span| Span {
-            style: span.style.bg(bg),
-            content: span.content,
+        .map(|span| {
+            let style = if span.style.bg == Some(SEARCH_HIGHLIGHT_BG) {
+                span.style
+            } else {
+                span.style.bg(bg)
+            };
+            Span {
+                style,
+                content: span.content,
+            }
         })
         .collect();
 
@@ -186,7 +211,7 @@ fn tint_line_bg<'a>(spans: Vec<Span<'a>>, bg: Color, width: usize) -> Vec<Span<'
 /// A no-op outside full-file view, or once no lines are marked (e.g. patch view, or an
 /// unchanged file). `app.full_file_content_offset` accounts for bat's leading decoration
 /// rows, so row indices line up with file line numbers the same way scroll targeting does.
-fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
+pub(crate) fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
     let bg = match app.diff_view_mode {
         DiffViewMode::FullFile(FullFileSource::Current) => FULL_FILE_ADDED_BG,
         DiffViewMode::FullFile(FullFileSource::Previous) => FULL_FILE_REMOVED_BG,
@@ -236,7 +261,7 @@ fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a
 /// over an "unavailable" placeholder (binary/unmerged/missing) rather than real
 /// content. Wins over the add/removed diff tint on overlapping rows, since it's
 /// applied afterward.
-fn apply_full_file_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
+pub(crate) fn apply_full_file_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
     if !app.full_file_cursor_active() {
         return text;
     }
@@ -294,7 +319,7 @@ fn apply_full_file_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a>
 /// "enter InlineSelect", not "extend a copy range". A no-op unless
 /// `app.patch_cursor_active()` — i.e. outside patch view, or during `Focus::InlineSelect`,
 /// which renders its own cursor over `raw_diff` in `build_raw_diff_text` instead.
-fn apply_patch_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
+pub(crate) fn apply_patch_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
     if !app.patch_cursor_active() {
         return text;
     }
@@ -357,6 +382,38 @@ fn diff_line_style(line: &str) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tint_line_bg_preserves_a_search_matchs_yellow_background() {
+        let spans = vec![
+            Span::styled(
+                "abc",
+                Style::default()
+                    .bg(SEARCH_HIGHLIGHT_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("def"),
+        ];
+
+        let tinted = tint_line_bg(spans, Color::DarkGray, 10);
+
+        assert_eq!(tinted[0].style.bg, Some(SEARCH_HIGHLIGHT_BG));
+        assert_eq!(tinted[1].style.bg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn tint_line_bg_pads_with_the_tint_color_regardless_of_search_highlight() {
+        // Padding cells are synthetic (`tint_line_bg`'s own addition to reach `width`) —
+        // they can never be part of a real search match, so they always get the tint
+        // color even on a row that does contain one.
+        let spans = vec![Span::styled("ab", Style::default().bg(SEARCH_HIGHLIGHT_BG))];
+
+        let tinted = tint_line_bg(spans, Color::DarkGray, 5);
+
+        assert_eq!(tinted.len(), 2);
+        assert_eq!(tinted[1].content.as_ref(), "   ");
+        assert_eq!(tinted[1].style.bg, Some(Color::DarkGray));
+    }
 
     fn numbered_text(count: usize) -> Text<'static> {
         Text::from(
