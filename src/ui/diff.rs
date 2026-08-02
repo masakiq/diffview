@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DiffTool, DiffViewMode, Focus, FullFileSource};
+use crate::app::{App, DiffContent, DiffTool, Focus, FullFileSource};
 use crate::ui::highlight::{highlight_full_file_text, highlight_text, SEARCH_HIGHLIGHT_BG};
 
 /// Background tint for full-file view's added/removed line highlight, matching delta's own
@@ -36,11 +36,11 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let title = match &app.current_file {
         Some(path) => {
-            if matches!(app.diff_view_mode, crate::app::DiffViewMode::FullFile(_)) {
+            if matches!(app.diff_content, crate::app::DiffContent::FullFile(_)) {
                 let mode_label = app
                     .content_annotation
                     .map(|annotation| annotation.title_label())
-                    .unwrap_or_else(|| app.diff_view_mode.label());
+                    .unwrap_or_else(|| app.diff_content.label());
                 format!(" {} [{}] [{}] ", path, origin_label, mode_label)
             } else if app.file_diff.is_binary {
                 format!(" {} [{}][binary] ", path, origin_label)
@@ -49,7 +49,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     " {} [{}] [{}] (hunk {}/{}) ",
                     path,
                     origin_label,
-                    app.diff_view_mode.label(),
+                    app.diff_content.label(),
                     app.hunk_cursor + 1,
                     app.file_diff.hunks.len()
                 )
@@ -58,7 +58,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     " {} [{}] [{}] ",
                     path,
                     origin_label,
-                    app.diff_view_mode.label()
+                    app.diff_content.label()
                 )
             }
         }
@@ -212,10 +212,10 @@ fn tint_line_bg<'a>(spans: Vec<Span<'a>>, bg: Color, width: usize) -> Vec<Span<'
 /// unchanged file). `app.full_file_content_offset` accounts for bat's leading decoration
 /// rows, so row indices line up with file line numbers the same way scroll targeting does.
 pub(crate) fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
-    let bg = match app.diff_view_mode {
-        DiffViewMode::FullFile(FullFileSource::Current) => FULL_FILE_ADDED_BG,
-        DiffViewMode::FullFile(FullFileSource::Previous) => FULL_FILE_REMOVED_BG,
-        DiffViewMode::Patch => return text,
+    let bg = match app.diff_content {
+        DiffContent::FullFile(FullFileSource::Current) => FULL_FILE_ADDED_BG,
+        DiffContent::FullFile(FullFileSource::Previous) => FULL_FILE_REMOVED_BG,
+        DiffContent::Patch => return text,
     };
     if app.full_file_highlight_lines.is_empty() {
         return text;

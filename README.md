@@ -99,13 +99,13 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `P`       | Copy the opened full file contents                  |
 | `]`       | Jump to next hunk                                   |
 | `[`       | Jump to previous hunk                               |
-| `v`       | Patch view: enter line-select mode. Full-file view: start/cancel a line range. |
+| `v`       | Patch view: enter Line-Select. Full-file view: start/cancel a line range. |
 | `y`       | Full-file view: copy the selected range (or just the cursor's line) |
 | `C`       | Run the commit command (`git commit -v` by default) |
 
-> `f`/`F` are available only in Diff View. The tree-pane preview stays in patch mode for
+> `f`/`F` are available only in Diff View. The tree-pane preview stays in patch view for
 > a tracked file; for an untracked file (Working Tree / Unstaged only) it opens directly
-> in full-file view instead, since patch mode has nothing of its own to show there.
+> in full-file view instead, since patch view has nothing of its own to show there.
 > For such a file, only the specific step back to patch view is blocked — pressing `f`
 > from `FullFile(current)` (or a second `F` from `FullFile(previous)`) is a no-op, since
 > there's no separate patch view to land in — but `f` and `F` still move freely between
@@ -119,7 +119,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 > `P` is available only in full-file view and copies the raw file contents.
 > Deleted files show the pre-delete contents when full-file view is available.
 
-### Line-Select Mode (started with `v`)
+### Line-Select (started with `v`)
 
 | Key       | Action                        |
 | --------- | ----------------------------- |
@@ -130,11 +130,11 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `/`       | Start pane-local search       |
 | `n` / `N` | Jump to next / previous match |
 | `]` / `[` | Jump between hunks            |
-| `v`       | Exit line-select mode         |
+| `v`       | Exit Line-Select              |
 
 > Search is case-insensitive in every pane.
 
-> Line-select mode is unavailable under the commit target.
+> Line-Select is unavailable under the commit target.
 
 ## File Status Indicators
 

@@ -174,7 +174,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Next match | `n` | Moves to the next match. |
 | Previous match | `N` | Moves to the previous match. |
 
-### Diff View Modes
+### Diff View Content
 
 | Action | Key | Description |
 |--------|-----|-------------|
@@ -193,7 +193,7 @@ Patch view cursor:
 
 Full-file view rules:
 
-- While the tree pane is focused, the right pane stays in the file's default preview mode: patch view for a tracked file, full-file view (current side) for an untracked one — see below. `f` and `F` have no effect there.
+- While the tree pane is focused, the right pane stays in the file's default preview content: patch view for a tracked file, full-file view (current side) for an untracked one — see below. `f` and `F` have no effect there.
 - An untracked file opens directly in full-file view (`FullFile(Current)`) rather than patch view — selecting it in the tree, pressing `l`/`→` on it (or moving the tree cursor over it, which updates the preview the same way without changing focus) all open it this way. An untracked file can only ever appear in Working Tree / Unstaged (see File Status Symbols below), where `Enter` isn't wired to anything — `l`/`→` open it, same as any other file (see Tree Operations above). Patch view has nothing of its own to show for an untracked file (it would just be `get_file_preview`'s bat rendering again, see above), so this skips straight to where the always-on cursor and `v`/`y` line-range select already work — but that cursor and `v`/`y` themselves still require `DiffView` focus (below); moving the tree cursor over such a file, or leaving full-file view back to the tree with `h`, shows this same full-file preview without them. This also applies retroactively: if a file open in patch view turns untracked out from under it (e.g. an external `git rm --cached` picked up by `r`), the next refresh normalizes it into `FullFile(Current)` the same way, rather than leaving patch view stuck showing that same bat-rendering fallback. Only the specific step *back* to patch view is blocked for such a file — `f` from `FullFile(Current)` is a no-op (not an error), since there's no separate patch view to land in; `F` still moves to `FullFile(Previous)`, showing the unavailable-previous-side message (untracked content never existed on a previous side), and from there `f` moves back to `FullFile(Current)` normally — only a *second* `F` press, which would otherwise land on patch view, is also a no-op.
 - `[` and `]` are available only in patch view (not full-file view). `v` is available in both, but means something different in each: in patch view it enters InlineSelect for staging; in full-file view it starts/cancels a line range for copying (see below) — it never enters a separate focus.
 - `P` works in either full-file view and copies the raw contents of the currently displayed file.

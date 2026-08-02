@@ -26,7 +26,7 @@ struct Args {
     #[arg(long, value_name = "TOOL")]
     tool: Option<String>,
 
-    /// Target commit-ish (e.g. hash, branch, tag). If omitted, working tree mode.
+    /// Target commit-ish (e.g. hash, branch, tag). If omitted, the working tree target.
     #[arg(value_name = "REV")]
     revision: Option<String>,
 }
