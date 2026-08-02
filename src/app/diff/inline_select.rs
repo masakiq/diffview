@@ -6,51 +6,52 @@ use crate::app::{App, Focus, TreePane};
 
 impl App {
     pub(crate) fn handle_inline_select_key(&mut self, key: KeyEvent) -> Result<()> {
-        let line_count = self.raw_line_count;
-        let half_page = (self.diff_pane_height / 2).max(1);
+        let line_count = self.diff.raw_line_count;
+        let half_page = (self.diff.diff_pane_height / 2).max(1);
 
         match key.code {
             KeyCode::Char('q') => {
                 self.should_quit = true;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.diff_cursor + 1 < line_count {
-                    self.diff_cursor += 1;
+                if self.diff.diff_cursor + 1 < line_count {
+                    self.diff.diff_cursor += 1;
                     self.sync_hunk_cursor();
                     crate::components::cursor::follow(
-                        self.diff_cursor,
-                        &mut self.diff_scroll,
-                        self.diff_pane_height,
+                        self.diff.diff_cursor,
+                        &mut self.diff.diff_scroll,
+                        self.diff.diff_pane_height,
                     );
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.diff_cursor > 0 {
-                    self.diff_cursor -= 1;
+                if self.diff.diff_cursor > 0 {
+                    self.diff.diff_cursor -= 1;
                     self.sync_hunk_cursor();
                     crate::components::cursor::follow(
-                        self.diff_cursor,
-                        &mut self.diff_scroll,
-                        self.diff_pane_height,
+                        self.diff.diff_cursor,
+                        &mut self.diff.diff_scroll,
+                        self.diff.diff_pane_height,
                     );
                 }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.diff_cursor = (self.diff_cursor + half_page).min(line_count.saturating_sub(1));
+                self.diff.diff_cursor =
+                    (self.diff.diff_cursor + half_page).min(line_count.saturating_sub(1));
                 self.sync_hunk_cursor();
                 crate::components::cursor::follow(
-                    self.diff_cursor,
-                    &mut self.diff_scroll,
-                    self.diff_pane_height,
+                    self.diff.diff_cursor,
+                    &mut self.diff.diff_scroll,
+                    self.diff.diff_pane_height,
                 );
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.diff_cursor = self.diff_cursor.saturating_sub(half_page);
+                self.diff.diff_cursor = self.diff.diff_cursor.saturating_sub(half_page);
                 self.sync_hunk_cursor();
                 crate::components::cursor::follow(
-                    self.diff_cursor,
-                    &mut self.diff_scroll,
-                    self.diff_pane_height,
+                    self.diff.diff_cursor,
+                    &mut self.diff.diff_scroll,
+                    self.diff.diff_pane_height,
                 );
             }
             KeyCode::Char('u')
@@ -76,6 +77,7 @@ impl App {
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.focus = self
+                    .diff
                     .diff_origin
                     .map(|p| p.to_focus())
                     .unwrap_or(Focus::Unstaged);
@@ -91,7 +93,7 @@ impl App {
             return Ok(());
         }
 
-        let info = match self.line_infos.get(self.diff_cursor) {
+        let info = match self.diff.line_infos.get(self.diff.diff_cursor) {
             Some(i) => i.clone(),
             None => return Ok(()),
         };
@@ -110,15 +112,15 @@ impl App {
             None => return Ok(()),
         };
 
-        let file = match &self.current_file {
+        let file = match &self.diff.current_file {
             Some(f) => f.clone(),
             None => return Ok(()),
         };
-        let hunk = match self.file_diff.hunks.get(hunk_idx).cloned() {
+        let hunk = match self.diff.file_diff.hunks.get(hunk_idx).cloned() {
             Some(h) => h,
             None => return Ok(()),
         };
-        let pane = match self.diff_origin {
+        let pane = match self.diff.diff_origin {
             Some(p) => p,
             None => return Ok(()),
         };
@@ -145,10 +147,10 @@ impl App {
                 self.clear_diff_cache();
                 self.refresh_trees()?;
 
-                let prev_cursor = self.diff_cursor;
+                let prev_cursor = self.diff.diff_cursor;
                 self.reload_current_diff()?;
 
-                if self.file_diff.hunks.is_empty() && self.raw_diff.trim().is_empty() {
+                if self.diff.file_diff.hunks.is_empty() && self.diff.raw_diff.trim().is_empty() {
                     self.clear_diff();
                     self.focus = pane.to_focus();
                 } else {
@@ -161,33 +163,33 @@ impl App {
     }
 
     fn move_to_next_selectable(&mut self, from: usize) {
-        let line_count = self.line_infos.len();
+        let line_count = self.diff.line_infos.len();
         for i in from..line_count {
-            if let Some(info) = self.line_infos.get(i) {
+            if let Some(info) = self.diff.line_infos.get(i) {
                 if info.is_selectable {
-                    self.diff_cursor = i;
+                    self.diff.diff_cursor = i;
                     self.ensure_cursor_visible();
                     return;
                 }
             }
         }
         for i in (0..from).rev() {
-            if let Some(info) = self.line_infos.get(i) {
+            if let Some(info) = self.diff.line_infos.get(i) {
                 if info.is_selectable {
-                    self.diff_cursor = i;
+                    self.diff.diff_cursor = i;
                     self.ensure_cursor_visible();
                     return;
                 }
             }
         }
-        self.diff_cursor = from.min(line_count.saturating_sub(1));
+        self.diff.diff_cursor = from.min(line_count.saturating_sub(1));
     }
 
     pub(crate) fn ensure_cursor_visible(&mut self) {
         crate::components::cursor::follow(
-            self.diff_cursor,
-            &mut self.diff_scroll,
-            self.diff_pane_height,
+            self.diff.diff_cursor,
+            &mut self.diff.diff_scroll,
+            self.diff.diff_pane_height,
         );
     }
 }

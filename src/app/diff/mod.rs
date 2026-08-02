@@ -8,7 +8,7 @@ mod inline_select;
 
 impl App {
     fn diff_copy_path_to_clipboard(&mut self) {
-        let path = match self.current_file.clone() {
+        let path = match self.diff.current_file.clone() {
             Some(path) => path,
             None => {
                 self.error_message = Some("No file selected".to_string());
@@ -20,12 +20,14 @@ impl App {
     }
 
     pub(super) fn full_file_clipboard_text(&self) -> Option<&str> {
-        (self.diff_content.is_full_file() && self.full_file_copyable && self.current_file.is_some())
-            .then_some(self.raw_diff.as_str())
+        (self.diff.diff_content.is_full_file()
+            && self.diff.full_file_copyable
+            && self.diff.current_file.is_some())
+        .then_some(self.diff.raw_diff.as_str())
     }
 
     fn diff_copy_full_file_to_clipboard(&mut self) {
-        let path = match self.current_file.clone() {
+        let path = match self.diff.current_file.clone() {
             Some(path) => path,
             None => {
                 self.error_message = Some("No file selected".to_string());
@@ -62,9 +64,9 @@ impl App {
     /// (review_9 Finding 2).
     pub fn full_file_cursor_active(&self) -> bool {
         self.focus == Focus::DiffView
-            && self.diff_content.is_full_file()
-            && self.full_file_copyable
-            && self.raw_line_count > 0
+            && self.diff.diff_content.is_full_file()
+            && self.diff.full_file_copyable
+            && self.diff.raw_line_count > 0
     }
 
     /// Whether the always-on patch-view cursor applies right now: `Focus::DiffView`
@@ -79,8 +81,8 @@ impl App {
     /// a cursor the user never navigated to.
     pub fn patch_cursor_active(&self) -> bool {
         self.focus == Focus::DiffView
-            && self.diff_content == DiffContent::Patch
-            && self.display_line_count > 0
+            && self.diff.diff_content == DiffContent::Patch
+            && self.diff.display_line_count > 0
     }
 
     /// Whether full-file search highlighting must skip past a leading gutter (line number,
@@ -91,16 +93,17 @@ impl App {
     /// correct there; the gutter-aware one would instead use each row's own length as its match
     /// floor (no `│` anywhere) and silently suppress every highlight.
     pub fn full_file_search_highlight_uses_gutter(&self) -> bool {
-        self.full_file_cursor_active() && self.full_file_content_offset > 0
+        self.full_file_cursor_active() && self.diff.full_file_content_offset > 0
     }
 
     pub(super) fn toggle_full_file_view(&mut self, source: FullFileSource) -> Result<()> {
-        self.pending_g = false;
-        let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) else {
+        self.diff.pending_g = false;
+        let (Some(path), Some(pane)) = (self.diff.current_file.clone(), self.diff.diff_origin)
+        else {
             return Ok(());
         };
 
-        let next_mode = self.diff_content.toggle_full_file(source);
+        let next_mode = self.diff.diff_content.toggle_full_file(source);
         // An untracked/unstaged file has no patch view of its own to fall back to (see
         // `current_file_is_untracked_unstaged`) — it's `get_file_preview`'s bat rendering
         // either way, just without the range-select cursor. Block only the `Patch`
@@ -114,7 +117,7 @@ impl App {
             return Ok(());
         }
         let entering_full_file_from_patch =
-            self.diff_content == DiffContent::Patch && next_mode.is_full_file();
+            self.diff.diff_content == DiffContent::Patch && next_mode.is_full_file();
         let target_line = entering_full_file_from_patch
             .then(|| {
                 self.patch_top_line_target(source)
@@ -130,32 +133,33 @@ impl App {
         // re-clamping it, and an unclamped value here would make `follow_full_file_cursor`
         // below bottom-align the cursor instead of leaving this positioning alone.
         let patch_screen_row = entering_full_file_from_patch.then(|| {
-            self.patch_cursor
-                .saturating_sub(self.diff_scroll)
-                .min(self.diff_pane_height.saturating_sub(1))
+            self.diff
+                .patch_cursor
+                .saturating_sub(self.diff.diff_scroll)
+                .min(self.diff.diff_pane_height.saturating_sub(1))
         });
         // Switching between FullFile(Current) and FullFile(Previous) (not going through
         // patch view) keeps the same scroll row and cursor line, since both sides render
         // with the same content offset and are almost always line-aligned for a small diff.
-        let was_full_file = self.diff_content.is_full_file() && next_mode.is_full_file();
-        let preserved_full_file_scroll = was_full_file.then_some(self.diff_scroll);
-        let preserved_full_file_cursor = was_full_file.then_some(self.full_file_cursor);
+        let was_full_file = self.diff.diff_content.is_full_file() && next_mode.is_full_file();
+        let preserved_full_file_scroll = was_full_file.then_some(self.diff.diff_scroll);
+        let preserved_full_file_cursor = was_full_file.then_some(self.diff.full_file_cursor);
 
         self.load_diff(&path, pane, next_mode)?;
 
         if let Some(file_line) = target_line {
-            self.full_file_cursor = file_line
+            self.diff.full_file_cursor = file_line
                 .saturating_sub(1)
-                .min(self.raw_line_count.saturating_sub(1));
+                .min(self.diff.raw_line_count.saturating_sub(1));
             // Reproduce the patch cursor's on-screen row: place the viewport so the mapped
             // line sits at the same offset from the top it had in patch view. Clamped to 0
             // when there isn't enough content above the target line to fill that offset
             // (e.g. the target is near the start of the file) — the closest achievable
             // result, since the viewport can't scroll to a negative row.
-            let display_row = self.full_file_content_offset + self.full_file_cursor;
-            self.diff_scroll = display_row
+            let display_row = self.diff.full_file_content_offset + self.diff.full_file_cursor;
+            self.diff.diff_scroll = display_row
                 .saturating_sub(patch_screen_row.unwrap_or(0))
-                .min(self.display_line_count.saturating_sub(1));
+                .min(self.diff.display_line_count.saturating_sub(1));
         } else if was_full_file && !self.full_file_cursor_active() {
             // Switching between full-file sides but landing on an unavailable placeholder
             // (binary/unmerged/missing/empty — `full_file_cursor_active()` is false here
@@ -167,15 +171,15 @@ impl App {
             // could ever restore it (review_11 Finding 2). `follow_full_file_cursor` below
             // is also skipped for the same `full_file_cursor_active()` reason, so nothing
             // re-clamps this against the placeholder's viewport either.
-            self.diff_scroll = preserved_full_file_scroll.unwrap_or(0);
-            self.full_file_cursor = preserved_full_file_cursor.unwrap_or(0);
+            self.diff.diff_scroll = preserved_full_file_scroll.unwrap_or(0);
+            self.diff.full_file_cursor = preserved_full_file_cursor.unwrap_or(0);
         } else if let Some(scroll) = preserved_full_file_scroll {
-            self.diff_scroll = scroll.min(self.display_line_count.saturating_sub(1));
-            self.full_file_cursor = preserved_full_file_cursor
+            self.diff.diff_scroll = scroll.min(self.diff.display_line_count.saturating_sub(1));
+            self.diff.full_file_cursor = preserved_full_file_cursor
                 .unwrap_or(0)
-                .min(self.raw_line_count.saturating_sub(1));
+                .min(self.diff.raw_line_count.saturating_sub(1));
         } else if next_mode.is_full_file() {
-            self.full_file_cursor = 0;
+            self.diff.full_file_cursor = 0;
         }
         if self.full_file_cursor_active() {
             // The scroll and cursor above are clamped independently against the new
@@ -188,7 +192,7 @@ impl App {
             self.follow_full_file_cursor();
         }
         // A range never survives a side switch, or a drop back into patch view.
-        self.full_file_anchor = None;
+        self.diff.full_file_anchor = None;
 
         self.status_message = Some(match next_mode {
             DiffContent::Patch => "Patch view".to_string(),
@@ -198,14 +202,17 @@ impl App {
     }
 
     pub(super) fn leave_diff_view_to_tree(&mut self) -> Result<()> {
-        self.pending_g = false;
+        self.diff.pending_g = false;
         let target_focus = self
+            .diff
             .diff_origin
             .map(|p| p.to_focus())
             .unwrap_or(Focus::Unstaged);
 
-        if self.diff_content.is_full_file() {
-            if let (Some(path), Some(pane)) = (self.current_file.clone(), self.diff_origin) {
+        if self.diff.diff_content.is_full_file() {
+            if let (Some(path), Some(pane)) =
+                (self.diff.current_file.clone(), self.diff.diff_origin)
+            {
                 // An untracked file's tree-preview content is full-file view itself (see
                 // `default_view_mode_for`), so falling back to `Patch` here would
                 // needlessly reload it into the same bat-rendered content under a
@@ -213,8 +220,8 @@ impl App {
                 let tree_preview_mode = self.default_view_mode_for(pane, &path);
                 self.load_diff(&path, pane, tree_preview_mode)?;
             } else {
-                self.diff_content = DiffContent::Patch;
-                self.content_annotation = None;
+                self.diff.diff_content = DiffContent::Patch;
+                self.diff.content_annotation = None;
             }
         }
 
@@ -223,12 +230,12 @@ impl App {
     }
 
     pub(super) fn handle_diff_key(&mut self, key: KeyEvent) -> Result<()> {
-        let line_count = self.display_line_count;
-        let half_page = (self.diff_pane_height / 2).max(1);
-        let is_full_file_view = self.diff_content.is_full_file();
+        let line_count = self.diff.display_line_count;
+        let half_page = (self.diff.diff_pane_height / 2).max(1);
+        let is_full_file_view = self.diff.diff_content.is_full_file();
 
         if !is_plain_g(key) {
-            self.pending_g = false;
+            self.diff.pending_g = false;
         }
 
         if self.can_trigger_commit_action(key) {
@@ -242,90 +249,91 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.full_file_cursor_active() {
-                    if self.full_file_cursor + 1 < self.raw_line_count {
-                        self.full_file_cursor += 1;
+                    if self.diff.full_file_cursor + 1 < self.diff.raw_line_count {
+                        self.diff.full_file_cursor += 1;
                         self.follow_full_file_cursor();
                     }
                 } else if self.patch_cursor_active() {
-                    if self.patch_cursor + 1 < line_count {
-                        self.patch_cursor += 1;
+                    if self.diff.patch_cursor + 1 < line_count {
+                        self.diff.patch_cursor += 1;
                         self.follow_patch_cursor();
                         self.sync_hunk_cursor_from_patch_cursor();
                     }
-                } else if self.diff_scroll + 1 < line_count {
-                    self.diff_scroll += 1;
+                } else if self.diff.diff_scroll + 1 < line_count {
+                    self.diff.diff_scroll += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.full_file_cursor_active() {
-                    if self.full_file_cursor > 0 {
-                        self.full_file_cursor -= 1;
+                    if self.diff.full_file_cursor > 0 {
+                        self.diff.full_file_cursor -= 1;
                         self.follow_full_file_cursor();
                     }
                 } else if self.patch_cursor_active() {
-                    if self.patch_cursor > 0 {
-                        self.patch_cursor -= 1;
+                    if self.diff.patch_cursor > 0 {
+                        self.diff.patch_cursor -= 1;
                         self.follow_patch_cursor();
                         self.sync_hunk_cursor_from_patch_cursor();
                     }
-                } else if self.diff_scroll > 0 {
-                    self.diff_scroll -= 1;
+                } else if self.diff.diff_scroll > 0 {
+                    self.diff.diff_scroll -= 1;
                 }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.full_file_cursor_active() {
-                    self.full_file_cursor = (self.full_file_cursor + half_page)
-                        .min(self.raw_line_count.saturating_sub(1));
+                    self.diff.full_file_cursor = (self.diff.full_file_cursor + half_page)
+                        .min(self.diff.raw_line_count.saturating_sub(1));
                     self.follow_full_file_cursor();
                 } else if self.patch_cursor_active() {
-                    self.patch_cursor =
-                        (self.patch_cursor + half_page).min(line_count.saturating_sub(1));
+                    self.diff.patch_cursor =
+                        (self.diff.patch_cursor + half_page).min(line_count.saturating_sub(1));
                     self.follow_patch_cursor();
                     self.sync_hunk_cursor_from_patch_cursor();
                 } else {
-                    self.diff_scroll =
-                        (self.diff_scroll + half_page).min(line_count.saturating_sub(1));
+                    self.diff.diff_scroll =
+                        (self.diff.diff_scroll + half_page).min(line_count.saturating_sub(1));
                 }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.full_file_cursor_active() {
-                    self.full_file_cursor = self.full_file_cursor.saturating_sub(half_page);
+                    self.diff.full_file_cursor =
+                        self.diff.full_file_cursor.saturating_sub(half_page);
                     self.follow_full_file_cursor();
                 } else if self.patch_cursor_active() {
-                    self.patch_cursor = self.patch_cursor.saturating_sub(half_page);
+                    self.diff.patch_cursor = self.diff.patch_cursor.saturating_sub(half_page);
                     self.follow_patch_cursor();
                     self.sync_hunk_cursor_from_patch_cursor();
                 } else {
-                    self.diff_scroll = self.diff_scroll.saturating_sub(half_page);
+                    self.diff.diff_scroll = self.diff.diff_scroll.saturating_sub(half_page);
                 }
             }
             KeyCode::Char('g') if is_plain_g(key) => {
-                if self.pending_g {
-                    self.pending_g = false;
+                if self.diff.pending_g {
+                    self.diff.pending_g = false;
                     if self.full_file_cursor_active() {
-                        self.full_file_cursor = 0;
+                        self.diff.full_file_cursor = 0;
                         self.follow_full_file_cursor();
                     } else if self.patch_cursor_active() {
-                        self.patch_cursor = 0;
+                        self.diff.patch_cursor = 0;
                         self.follow_patch_cursor();
                         self.sync_hunk_cursor_from_patch_cursor();
                     } else {
-                        self.diff_scroll = 0;
+                        self.diff.diff_scroll = 0;
                     }
                 } else {
-                    self.pending_g = true;
+                    self.diff.pending_g = true;
                 }
             }
             KeyCode::Char('G') => {
                 if self.full_file_cursor_active() {
-                    self.full_file_cursor = self.raw_line_count.saturating_sub(1);
+                    self.diff.full_file_cursor = self.diff.raw_line_count.saturating_sub(1);
                     self.follow_full_file_cursor();
                 } else if self.patch_cursor_active() {
-                    self.patch_cursor = line_count.saturating_sub(1);
+                    self.diff.patch_cursor = line_count.saturating_sub(1);
                     self.follow_patch_cursor();
                     self.sync_hunk_cursor_from_patch_cursor();
                 } else {
-                    self.diff_scroll = line_count.saturating_sub(1);
+                    self.diff.diff_scroll = line_count.saturating_sub(1);
                 }
             }
             KeyCode::Char('/') => {
@@ -350,14 +358,14 @@ impl App {
                 self.toggle_full_file_view(FullFileSource::Previous)?;
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                self.full_file_anchor = None;
+                self.diff.full_file_anchor = None;
                 self.leave_diff_view_to_tree()?;
             }
             KeyCode::Char('v') => {
                 if self.full_file_cursor_active() {
-                    self.full_file_anchor = match self.full_file_anchor {
+                    self.diff.full_file_anchor = match self.diff.full_file_anchor {
                         Some(_) => None,
-                        None => Some(self.full_file_cursor),
+                        None => Some(self.diff.full_file_cursor),
                     };
                 } else if is_full_file_view {
                     self.error_message =
@@ -365,7 +373,7 @@ impl App {
                 } else if self.is_commit() {
                     self.error_message = Some("Commit diff is read-only".to_string());
                 } else if self.tool.supports_line_ops() {
-                    if self.file_diff.hunks.is_empty() {
+                    if self.diff.file_diff.hunks.is_empty() {
                         self.error_message = Some("No hunks to select lines from".to_string());
                     } else {
                         self.focus = Focus::InlineSelect;
@@ -378,10 +386,10 @@ impl App {
                         // two raw lines into one row), so `patch_cursor` isn't a valid raw
                         // index there — keep today's `diff_scroll`-based start instead of
                         // landing on an unrelated raw line.
-                        self.diff_cursor = if self.tool == DiffTool::Raw {
-                            self.patch_cursor
+                        self.diff.diff_cursor = if self.tool == DiffTool::Raw {
+                            self.diff.patch_cursor
                         } else {
-                            self.diff_scroll
+                            self.diff.diff_scroll
                         };
                         self.sync_hunk_cursor();
                         self.status_message =
@@ -405,45 +413,45 @@ impl App {
     }
 
     fn jump_next_hunk(&mut self) {
-        let count = self.file_diff.hunks.len();
+        let count = self.diff.file_diff.hunks.len();
         if count == 0 {
             return;
         }
-        if self.hunk_cursor + 1 < count {
-            self.hunk_cursor += 1;
+        if self.diff.hunk_cursor + 1 < count {
+            self.diff.hunk_cursor += 1;
         }
-        self.scroll_to_hunk(self.hunk_cursor);
+        self.scroll_to_hunk(self.diff.hunk_cursor);
     }
 
     fn jump_prev_hunk(&mut self) {
-        if self.file_diff.hunks.is_empty() {
+        if self.diff.file_diff.hunks.is_empty() {
             return;
         }
-        if self.hunk_cursor > 0 {
-            self.hunk_cursor -= 1;
+        if self.diff.hunk_cursor > 0 {
+            self.diff.hunk_cursor -= 1;
         }
-        self.scroll_to_hunk(self.hunk_cursor);
+        self.scroll_to_hunk(self.diff.hunk_cursor);
     }
 
     fn scroll_to_hunk(&mut self, hunk_idx: usize) {
         let mut hunk_count = 0usize;
         let content = if self.focus == Focus::InlineSelect {
-            &self.raw_diff
+            &self.diff.raw_diff
         } else {
-            &self.display_diff
+            &self.diff.display_diff
         };
         for (line_no, line) in content.lines().enumerate() {
             if line.starts_with("@@") {
                 if hunk_count == hunk_idx {
                     if self.focus == Focus::InlineSelect {
-                        self.diff_cursor = line_no;
-                        self.diff_scroll = line_no;
+                        self.diff.diff_cursor = line_no;
+                        self.diff.diff_scroll = line_no;
                     } else {
                         // Only ever reached from Patch-content DiffView (full-file view
                         // guards `]`/`[` out entirely) — keep the always-on patch cursor
                         // in sync with the jump, not just the viewport.
-                        self.diff_scroll = line_no;
-                        self.patch_cursor = line_no;
+                        self.diff.diff_scroll = line_no;
+                        self.diff.patch_cursor = line_no;
                     }
                     return;
                 }
@@ -455,11 +463,11 @@ impl App {
     /// Keeps the cursor's display row within the visible viewport, mirroring
     /// `handle_inline_select_key`'s own j/k viewport-follow logic.
     pub(super) fn follow_full_file_cursor(&mut self) {
-        let display_row = self.full_file_content_offset + self.full_file_cursor;
+        let display_row = self.diff.full_file_content_offset + self.diff.full_file_cursor;
         crate::components::cursor::follow(
             display_row,
-            &mut self.diff_scroll,
-            self.diff_pane_height,
+            &mut self.diff.diff_scroll,
+            self.diff.diff_pane_height,
         );
     }
 
@@ -467,9 +475,9 @@ impl App {
     /// `patch_cursor` is already a display row itself, with no content-offset to add.
     pub(super) fn follow_patch_cursor(&mut self) {
         crate::components::cursor::follow(
-            self.patch_cursor,
-            &mut self.diff_scroll,
-            self.diff_pane_height,
+            self.diff.patch_cursor,
+            &mut self.diff.diff_scroll,
+            self.diff.diff_pane_height,
         );
     }
 
@@ -493,6 +501,7 @@ impl App {
     pub(super) fn full_file_selection_text(&self) -> String {
         let (lo, hi) = self.full_file_selection_range();
         let mut text = self
+            .diff
             .raw_diff
             .lines()
             .skip(lo)
@@ -504,8 +513,8 @@ impl App {
     }
 
     fn full_file_selection_range(&self) -> (usize, usize) {
-        let cursor = self.full_file_cursor;
-        match self.full_file_anchor {
+        let cursor = self.diff.full_file_cursor;
+        match self.diff.full_file_anchor {
             Some(anchor) => (anchor.min(cursor), anchor.max(cursor)),
             None => (cursor, cursor),
         }
@@ -524,9 +533,9 @@ impl App {
     }
 
     pub(super) fn sync_hunk_cursor(&mut self) {
-        if let Some(info) = self.line_infos.get(self.diff_cursor) {
+        if let Some(info) = self.diff.line_infos.get(self.diff.diff_cursor) {
             if let Some(new_hunk) = info.hunk_idx {
-                self.hunk_cursor = new_hunk;
+                self.diff.hunk_cursor = new_hunk;
             }
         }
     }
@@ -544,12 +553,12 @@ impl App {
         if self.tool != DiffTool::Raw {
             return;
         }
-        if self.file_diff.hunks.is_empty() {
+        if self.diff.file_diff.hunks.is_empty() {
             return;
         }
-        if let Some(info) = self.line_infos.get(self.patch_cursor) {
+        if let Some(info) = self.diff.line_infos.get(self.diff.patch_cursor) {
             if let Some(new_hunk) = info.hunk_idx {
-                self.hunk_cursor = new_hunk;
+                self.diff.hunk_cursor = new_hunk;
                 return;
             }
         }
@@ -560,9 +569,10 @@ impl App {
         // nearest hunk at or after the cursor, matching the direction `]` would jump;
         // fall back to the last hunk if the cursor is past every hunk's metadata.
         let next_hunk = self
+            .diff
             .line_infos
-            .get(self.patch_cursor..)
+            .get(self.diff.patch_cursor..)
             .and_then(|rest| rest.iter().find_map(|info| info.hunk_idx));
-        self.hunk_cursor = next_hunk.unwrap_or(self.file_diff.hunks.len() - 1);
+        self.diff.hunk_cursor = next_hunk.unwrap_or(self.diff.file_diff.hunks.len() - 1);
     }
 }

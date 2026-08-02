@@ -29,36 +29,37 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let origin_label = match app.diff_origin {
+    let origin_label = match app.diff.diff_origin {
         Some(pane) => app.diff_origin_label(pane),
         None => String::new(),
     };
 
-    let title = match &app.current_file {
+    let title = match &app.diff.current_file {
         Some(path) => {
-            if matches!(app.diff_content, crate::app::DiffContent::FullFile(_)) {
+            if matches!(app.diff.diff_content, crate::app::DiffContent::FullFile(_)) {
                 let mode_label = app
+                    .diff
                     .content_annotation
                     .map(|annotation| annotation.title_label())
-                    .unwrap_or_else(|| app.diff_content.label());
+                    .unwrap_or_else(|| app.diff.diff_content.label());
                 format!(" {} [{}] [{}] ", path, origin_label, mode_label)
-            } else if app.file_diff.is_binary {
+            } else if app.diff.file_diff.is_binary {
                 format!(" {} [{}][binary] ", path, origin_label)
-            } else if !app.file_diff.hunks.is_empty() {
+            } else if !app.diff.file_diff.hunks.is_empty() {
                 format!(
                     " {} [{}] [{}] (hunk {}/{}) ",
                     path,
                     origin_label,
-                    app.diff_content.label(),
-                    app.hunk_cursor + 1,
-                    app.file_diff.hunks.len()
+                    app.diff.diff_content.label(),
+                    app.diff.hunk_cursor + 1,
+                    app.diff.file_diff.hunks.len()
                 )
             } else {
                 format!(
                     " {} [{}] [{}] ",
                     path,
                     origin_label,
-                    app.diff_content.label()
+                    app.diff.diff_content.label()
                 )
             }
         }
@@ -73,7 +74,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let inner_area = inner.inner(area);
     f.render_widget(inner, area);
 
-    if app.current_file.is_none() {
+    if app.diff.current_file.is_none() {
         let hint = Paragraph::new("Select a file and press 'l' to view its diff.")
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(hint, inner_area);
@@ -81,18 +82,22 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let (content, use_raw_renderer) = if app.focus == Focus::InlineSelect {
-        (&app.raw_diff, true)
+        (&app.diff.raw_diff, true)
     } else {
         match app.tool {
-            DiffTool::Raw => (&app.display_diff, app.cached_display_text.is_none()),
-            _ => (&app.display_diff, false),
+            DiffTool::Raw => (
+                &app.diff.display_diff,
+                app.diff.cached_display_text.is_none(),
+            ),
+            _ => (&app.diff.display_diff, false),
         }
     };
 
     let text = if use_raw_renderer {
         build_raw_diff_text(app, content)
     } else {
-        app.cached_display_text
+        app.diff
+            .cached_display_text
             .clone()
             .unwrap_or_else(|| build_raw_diff_text(app, content))
     };
@@ -115,8 +120,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         highlight_full_file_text(
             text,
             app.diff_search_query(),
-            &app.raw_diff,
-            app.full_file_content_offset,
+            &app.diff.raw_diff,
+            app.diff.full_file_content_offset,
         )
     } else {
         highlight_text(text, app.diff_search_query())
@@ -124,7 +129,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let text = apply_full_file_line_bg(text, app, inner_area.width);
     let text = apply_full_file_cursor(text, app, inner_area.width);
     let text = apply_patch_cursor(text, app, inner_area.width);
-    let text = window_text_rows(text, app.diff_scroll, inner_area.height as usize);
+    let text = window_text_rows(text, app.diff.diff_scroll, inner_area.height as usize);
     let para = Paragraph::new(text);
     f.render_widget(para, inner_area);
 }
@@ -159,7 +164,7 @@ fn build_raw_diff_text<'a>(app: &App, content: &'a str) -> Text<'a> {
         .map(|(display_idx, line)| {
             let base_style = diff_line_style(line);
 
-            let style = if inline_select && display_idx == app.diff_cursor {
+            let style = if inline_select && display_idx == app.diff.diff_cursor {
                 base_style.bg(Color::DarkGray).add_modifier(Modifier::BOLD)
             } else {
                 base_style
@@ -207,21 +212,21 @@ fn tint_line_bg<'a>(spans: Vec<Span<'a>>, bg: Color, width: usize) -> Vec<Span<'
 }
 
 /// Overlays an added/removed background tint on full-file view rows that the currently
-/// loaded diff marks as changed (`app.full_file_highlight_lines`, 1-based file line numbers).
+/// loaded diff marks as changed (`app.diff.full_file_highlight_lines`, 1-based file line numbers).
 /// A no-op outside full-file view, or once no lines are marked (e.g. patch view, or an
-/// unchanged file). `app.full_file_content_offset` accounts for bat's leading decoration
+/// unchanged file). `app.diff.full_file_content_offset` accounts for bat's leading decoration
 /// rows, so row indices line up with file line numbers the same way scroll targeting does.
 pub(crate) fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16) -> Text<'a> {
-    let bg = match app.diff_content {
+    let bg = match app.diff.diff_content {
         DiffContent::FullFile(FullFileSource::Current) => FULL_FILE_ADDED_BG,
         DiffContent::FullFile(FullFileSource::Previous) => FULL_FILE_REMOVED_BG,
         DiffContent::Patch => return text,
     };
-    if app.full_file_highlight_lines.is_empty() {
+    if app.diff.full_file_highlight_lines.is_empty() {
         return text;
     }
 
-    let offset = app.full_file_content_offset;
+    let offset = app.diff.full_file_content_offset;
     let width = width as usize;
     let lines = text
         .lines
@@ -232,6 +237,7 @@ pub(crate) fn apply_full_file_line_bg<'a>(text: Text<'a>, app: &App, width: u16)
                 return line;
             };
             if app
+                .diff
                 .full_file_highlight_lines
                 .binary_search(&file_line)
                 .is_err()
@@ -266,9 +272,9 @@ pub(crate) fn apply_full_file_cursor<'a>(text: Text<'a>, app: &App, width: u16) 
         return text;
     }
 
-    let offset = app.full_file_content_offset;
-    let cursor = app.full_file_cursor;
-    let (lo, hi) = match app.full_file_anchor {
+    let offset = app.diff.full_file_content_offset;
+    let cursor = app.diff.full_file_cursor;
+    let (lo, hi) = match app.diff.full_file_anchor {
         Some(anchor) => (anchor.min(cursor), anchor.max(cursor)),
         None => (cursor, cursor),
     };
@@ -312,7 +318,7 @@ pub(crate) fn apply_full_file_cursor<'a>(text: Text<'a>, app: &App, width: u16) 
     }
 }
 
-/// Overlays the always-on patch-view cursor: the single display row `app.patch_cursor`
+/// Overlays the always-on patch-view cursor: the single display row `app.diff.patch_cursor`
 /// points at gets `FULL_FILE_SELECT_BG` and bold, the same style full-file view's own
 /// cursor uses, so the two read as the same navigation primitive. Unlike
 /// `apply_full_file_cursor`, there's no anchor/range — patch view's `v` key still means
@@ -324,7 +330,7 @@ pub(crate) fn apply_patch_cursor<'a>(text: Text<'a>, app: &App, width: u16) -> T
         return text;
     }
 
-    let cursor = app.patch_cursor;
+    let cursor = app.diff.patch_cursor;
     let width = width as usize;
 
     let lines = text

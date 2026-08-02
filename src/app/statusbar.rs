@@ -17,17 +17,17 @@ impl App {
             "[j/k]move [Ctrl-U/D]jump [h]back [c]copy-path [/]search [n/N]match [r]refresh [q]quit"
                 .to_string();
 
-        if self.diff_content == DiffContent::Patch {
+        if self.diff.diff_content == DiffContent::Patch {
             ops.push_str(" [[]/[]]hunk");
         }
-        if self.diff_content.is_full_file() {
+        if self.diff.diff_content.is_full_file() {
             ops.push_str(" [P]copy-file [v]select [y]copy");
         }
 
         if !self.is_commit() {
             ops.push_str(&format!(" [{}]commit", self.commit_key_label()));
         }
-        if self.diff_content == DiffContent::Patch
+        if self.diff.diff_content == DiffContent::Patch
             && !self.is_commit()
             && self.tool.supports_line_ops()
         {
@@ -36,7 +36,7 @@ impl App {
         // An untracked/unstaged file has no patch view to toggle to (see
         // `current_file_is_untracked_unstaged`), so `f` is disabled there — drop its
         // hint rather than advertise a key that silently does nothing.
-        ops.push_str(match self.diff_content {
+        ops.push_str(match self.diff.diff_content {
             DiffContent::Patch => " [f]file [F]prev-file",
             DiffContent::FullFile(FullFileSource::Current)
                 if self.current_file_is_untracked_unstaged() =>
