@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use crate::clipboard;
 use crate::config::Config;
+use crate::domain::diff::{parse_diff, DiffLine, FileDiff};
 use crate::domain::status::GitFile;
-use crate::git::diff::{parse_diff, DiffLine, FileDiff};
 use crate::infra::git::status::{get_commit_files, get_status};
 
 // ─── Focus ──────────────────────────────────────────────────────────────────
@@ -1355,7 +1355,7 @@ impl App {
         content_annotation: Option<ContentAnnotation>,
         highlight_lines: Vec<u32>,
     ) -> LoadedContent {
-        match crate::git::diff::render_content_preview(path, &raw, &self.repo_root) {
+        match crate::infra::git::diff::render_content_preview(path, &raw, &self.repo_root) {
             Ok(preview) => self.build_loaded_content(
                 raw,
                 preview.content,
@@ -1378,9 +1378,10 @@ impl App {
         }
 
         let raw = if let Some(rev) = self.commit_revision.as_deref() {
-            crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root).unwrap_or_default()
+            crate::infra::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
+                .unwrap_or_default()
         } else {
-            crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
+            crate::infra::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
                 .unwrap_or_default()
         };
 
@@ -1493,7 +1494,8 @@ impl App {
         };
 
         let is_binary = if file_state.is_untracked {
-            crate::git::diff::is_binary_untracked_file(path, &self.repo_root).unwrap_or(false)
+            crate::infra::git::diff::is_binary_untracked_file(path, &self.repo_root)
+                .unwrap_or(false)
         } else {
             file_diff.is_binary
         };
@@ -1508,7 +1510,7 @@ impl App {
 
         match target {
             FullFileContentTarget::Worktree => {
-                match crate::git::diff::get_file_content(path, &self.repo_root) {
+                match crate::infra::git::diff::get_file_content(path, &self.repo_root) {
                     Ok(raw) => self.rich_full_file_content(path, raw, None, highlight_lines),
                     Err(_) => self.full_file_unavailable_content("File content unavailable", None),
                 }
@@ -1516,7 +1518,8 @@ impl App {
             FullFileContentTarget::Revision {
                 rev_spec,
                 content_annotation,
-            } => match crate::git::diff::get_file_content_at_rev(&rev_spec, &self.repo_root) {
+            } => match crate::infra::git::diff::get_file_content_at_rev(&rev_spec, &self.repo_root)
+            {
                 Ok(raw) => {
                     self.rich_full_file_content(path, raw, content_annotation, highlight_lines)
                 }
@@ -1556,8 +1559,8 @@ impl App {
                 let mut force_ansi_rendering = false;
                 let mut patch_content_offset = 0;
                 let (raw, display) = if is_untracked {
-                    let preview = crate::git::diff::get_file_preview(path, &self.repo_root)
-                        .unwrap_or_else(|_| crate::git::diff::FilePreview {
+                    let preview = crate::infra::git::diff::get_file_preview(path, &self.repo_root)
+                        .unwrap_or_else(|_| crate::infra::git::diff::FilePreview {
                             content: String::new(),
                             uses_ansi: false,
                             content_offset: 0,
@@ -1566,12 +1569,13 @@ impl App {
                     patch_content_offset = preview.content_offset;
                     (preview.content.clone(), preview.content)
                 } else if let Some(rev) = self.commit_revision.as_deref() {
-                    let raw = crate::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
-                        .unwrap_or_default();
+                    let raw =
+                        crate::infra::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
+                            .unwrap_or_default();
                     let display = if self.tool == DiffTool::Raw {
                         raw.clone()
                     } else {
-                        crate::git::diff::get_display_commit_diff(
+                        crate::infra::git::diff::get_display_commit_diff(
                             rev,
                             path,
                             self.tool.name(),
@@ -1582,13 +1586,16 @@ impl App {
                     };
                     (raw, display)
                 } else {
-                    let raw =
-                        crate::git::diff::get_raw_diff(path, pane.is_staged(), &self.repo_root)
-                            .unwrap_or_default();
+                    let raw = crate::infra::git::diff::get_raw_diff(
+                        path,
+                        pane.is_staged(),
+                        &self.repo_root,
+                    )
+                    .unwrap_or_default();
                     let display = if self.tool == DiffTool::Raw {
                         raw.clone()
                     } else {
-                        crate::git::diff::get_display_diff(
+                        crate::infra::git::diff::get_display_diff(
                             path,
                             pane.is_staged(),
                             self.tool.name(),

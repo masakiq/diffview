@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::git::diff::{DiffLine, Hunk};
+use crate::domain::diff::{DiffLine, Hunk};
 
 pub fn build_hunk_patch(file_path: &str, hunk: &Hunk) -> String {
     let mut patch = String::new();
@@ -149,7 +149,7 @@ pub fn build_reverse_partial_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::diff::{DiffLine, Hunk};
+    use crate::domain::diff::{DiffLine, Hunk};
 
     fn make_hunk() -> Hunk {
         Hunk {

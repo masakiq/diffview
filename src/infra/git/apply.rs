@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::domain::diff::Hunk;
 use crate::domain::patch::{build_hunk_patch, build_partial_patch, build_reverse_partial_patch};
-use crate::git::diff::Hunk;
 
 // ─── File-level operations ─────────────────────────────────────────────────
 
