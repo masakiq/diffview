@@ -1,13 +1,12 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
-    text::Span,
+    style::{Color, Style},
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
 
 use crate::app::{App, TreePane};
-use crate::components::highlight::highlight_line;
+use crate::components::tree_row::render_row;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
     let focused = app.is_tree_focused(pane);
@@ -36,6 +35,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
         return;
     }
 
+    let is_commit = app.is_commit();
+    let search_query = app.tree_search_query(pane);
     let items: Vec<ListItem> = tree
         .visible
         .iter()
@@ -43,58 +44,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
         .map(|(display_idx, &node_idx)| {
             let node = &tree.all_nodes[node_idx];
             let is_selected = show_cursor && display_idx == tree.cursor;
-            let prefix = node.display_prefix();
-
-            let status_char = if node.is_dir {
-                ' '
-            } else {
-                node.status_for(pane)
-            };
-
-            let status_str = node.display_status_suffix(pane);
-
-            let name_style = if node.is_dir {
-                Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD)
-            } else if node.is_untracked() {
-                Style::default().fg(Color::DarkGray)
-            } else if !app.is_commit() && node.is_unmerged() {
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-            } else {
-                match status_char {
-                    'M' => Style::default().fg(Color::Yellow),
-                    'A' => Style::default().fg(Color::Green),
-                    'D' => Style::default().fg(Color::Red),
-                    'R' | 'C' => Style::default().fg(Color::Cyan),
-                    '?' => Style::default().fg(Color::DarkGray),
-                    _ => Style::default(),
-                }
-            };
-
-            let status_style = match status_char {
-                'M' => Style::default().fg(Color::Yellow),
-                'A' => Style::default().fg(Color::Green),
-                'D' => Style::default().fg(Color::Red),
-                'R' | 'C' => Style::default().fg(Color::Cyan),
-                '?' => Style::default().fg(Color::DarkGray),
-                'U' => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                _ => Style::default(),
-            };
-
-            let row_style = if is_selected {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-
-            let spans = vec![
-                Span::styled(prefix, row_style),
-                Span::styled(node.name.clone(), name_style.patch(row_style)),
-                Span::styled(status_str, status_style.patch(row_style)),
-            ];
-
-            ListItem::new(highlight_line(spans, app.tree_search_query(pane)))
+            render_row(node, pane, is_selected, is_commit, search_query)
         })
         .collect();
 
