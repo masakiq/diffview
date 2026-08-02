@@ -82,42 +82,58 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 > The all-zero object ID (`0000000000000000000000000000000000000000`) is treated as a special case and opens the working-tree target instead.
 > Tree search is case-insensitive. Under the working-tree target it scans all files in both `Unstaged` and `Staged`, including collapsed entries.
 
-### Diff View (right pane)
+### Diff View — Patch (right pane)
 
-| Key       | Action                                              |
-| --------- | --------------------------------------------------- |
-| `j` / `↓` | Scroll down one line                                |
-| `k` / `↑` | Scroll up one line                                  |
-| `Ctrl+D`  | Scroll down half a page                             |
-| `Ctrl+U`  | Scroll up half a page                               |
-| `gg`      | Jump to top                                         |
-| `G`       | Jump to bottom                                      |
-| `c`       | Copy the displayed file path                        |
-| `/`       | Start pane-local search                             |
-| `n` / `N` | Jump to next / previous match                       |
-| `f`       | Toggle patch view / full-file view (for an untracked file in Working Tree / Unstaged, `f` from `FullFile(current)` is a no-op instead of returning to patch view — see note) |
-| `P`       | Copy the opened full file contents                  |
-| `]`       | Jump to next hunk                                   |
-| `[`       | Jump to previous hunk                               |
-| `v`       | Patch view: enter Line-Select. Full-file view: start/cancel a line range. |
-| `y`       | Full-file view: copy the selected range (or just the cursor's line) |
-| `C`       | Run the commit command (`git commit -v` by default) |
+The default view for a tracked file: the `git diff` hunks, with an always-on line cursor.
 
-> `f`/`F` are available only in Diff View. The tree-pane preview stays in patch view for
-> a tracked file; for an untracked file (Working Tree / Unstaged only) it opens directly
-> in full-file view instead, since patch view has nothing of its own to show there.
-> For such a file, only the specific step back to patch view is blocked — pressing `f`
-> from `FullFile(current)` (or a second `F` from `FullFile(previous)`) is a no-op, since
-> there's no separate patch view to land in — but `f` and `F` still move freely between
-> `FullFile(current)` and `FullFile(previous)` itself (the latter always shows the
-> previous-side-unavailable message for such a file, since it never existed before this
-> change).
-> Full-file view always shows a line cursor over real content while Diff View is
-> focused; `j`/`k`, `Ctrl+D`/`Ctrl+U`, and `gg`/`G` move it directly instead of just
-> scrolling. `]` and `[` are unavailable there.
+| Key       | Action                                               |
+| --------- | ----------------------------------------------------- |
+| `j` / `↓` | Move cursor down one line                             |
+| `k` / `↑` | Move cursor up one line                                |
+| `Ctrl+D`  | Move cursor down half a page                           |
+| `Ctrl+U`  | Move cursor up half a page                             |
+| `gg`      | Jump to top                                            |
+| `G`       | Jump to bottom                                         |
+| `]`       | Jump to next hunk                                      |
+| `[`       | Jump to previous hunk                                  |
+| `c`       | Copy the displayed file path                           |
+| `/`       | Start pane-local search                                |
+| `n` / `N` | Jump to next / previous match                          |
+| `f`       | Switch to full-file view (current side)                |
+| `F`       | Switch to full-file view (previous side)               |
+| `v`       | Enter Line-Select at the cursor's line                 |
+| `C`       | Run the commit command (`git commit -v` by default)    |
+
+### Diff View — Full File (right pane)
+
+Entered with `f`/`F` from Patch view, or automatically for an untracked file (which has
+no patch of its own).
+
+| Key       | Action                                                |
+| --------- | ------------------------------------------------------ |
+| `j` / `↓` | Move cursor down one line                               |
+| `k` / `↑` | Move cursor up one line                                 |
+| `Ctrl+D`  | Move cursor down half a page                            |
+| `Ctrl+U`  | Move cursor up half a page                              |
+| `gg`      | Jump to top                                             |
+| `G`       | Jump to bottom                                          |
+| `c`       | Copy the displayed file path                            |
+| `/`       | Start pane-local search                                 |
+| `n` / `N` | Jump to next / previous match                           |
+| `f`       | Switch to current side / back to patch view             |
+| `F`       | Switch to previous side / back to patch view            |
+| `P`       | Copy the whole opened file's contents                   |
+| `v`       | Start / cancel a line range at the cursor               |
+| `y`       | Copy the selected range (or just the cursor's line)     |
+| `C`       | Run the commit command (`git commit -v` by default)     |
+
+> For an untracked file (Working Tree / Unstaged only), full-file view opens directly —
+> there is no patch view for it to fall back to, so `f` pressed on the current side is a
+> no-op there instead of returning to patch view, and the previous side is always
+> unavailable (untracked content never existed before). Deleted files show the pre-delete
+> contents on the previous side. Binary/unmerged files show an unavailable message instead
+> of content on either side.
 > `v` and `y` are read-only, so they also work over full-file content under the Commit target.
-> `P` is available only in full-file view and copies the raw file contents.
-> Deleted files show the pre-delete contents when full-file view is available.
 
 ### Line-Select (started with `v`)
 
