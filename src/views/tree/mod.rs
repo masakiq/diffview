@@ -182,8 +182,8 @@ impl App {
             self.tree_mut(pane).expand_and_enter();
             self.tree_load_preview();
         } else {
-            let view_mode = self.default_view_mode_for(pane, &path);
-            self.load_diff(&path, pane, view_mode)?;
+            let diff_content = self.default_diff_content_for(pane, &path);
+            self.load_diff(&path, pane, diff_content)?;
             self.focus = Focus::DiffView;
         }
         Ok(())
@@ -301,8 +301,8 @@ impl App {
             return;
         }
 
-        let view_mode = self.default_view_mode_for(pane, &path);
-        let _ = self.load_diff(&path, pane, view_mode);
+        let diff_content = self.default_diff_content_for(pane, &path);
+        let _ = self.load_diff(&path, pane, diff_content);
     }
 
     fn refresh_after_tree_op(&mut self) -> Result<()> {

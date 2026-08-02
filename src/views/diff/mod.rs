@@ -75,7 +75,7 @@ impl App {
     /// Requires `Focus::DiffView`. This used to not check focus at all, on the
     /// assumption that full-file content always resets back to `Patch` before focus can
     /// leave the diff pane — true until an untracked/unstaged file started defaulting
-    /// straight into full-file view for its tree preview (`default_view_mode_for`):
+    /// straight into full-file view for its tree preview (`default_diff_content_for`):
     /// that preview renders with `Focus::Unstaged`/`Focus::Staged` still active, so
     /// without this check the tree-preview pane showed an apparently-operable cursor
     /// that `j`/`k`/`v`/`y` (all gated on `Focus::DiffView` in `handle_diff_key`)
@@ -122,7 +122,7 @@ impl App {
             return Ok(());
         };
 
-        let next_mode = self.diff.diff_content.toggle_full_file(source);
+        let next_content = self.diff.diff_content.toggle_full_file(source);
         // An untracked/unstaged file has no patch view of its own to fall back to (see
         // `current_file_is_untracked_unstaged`) — it's `get_file_preview`'s bat rendering
         // either way, just without the range-select cursor. Block only the `Patch`
@@ -132,11 +132,11 @@ impl App {
         // see). Checked here rather than by guarding the `f`/`F` key match arms so every
         // route to `Patch` — including a second `F` press while already on `Previous` —
         // is covered by the same single check.
-        if next_mode == DiffContent::Patch && self.current_file_is_untracked_unstaged() {
+        if next_content == DiffContent::Patch && self.current_file_is_untracked_unstaged() {
             return Ok(());
         }
         let entering_full_file_from_patch =
-            self.diff.diff_content == DiffContent::Patch && next_mode.is_full_file();
+            self.diff.diff_content == DiffContent::Patch && next_content.is_full_file();
         let target_line = entering_full_file_from_patch
             .then(|| {
                 self.patch_top_line_target(source)
@@ -160,11 +160,11 @@ impl App {
         // Switching between FullFile(Current) and FullFile(Previous) (not going through
         // patch view) keeps the same scroll row and cursor line, since both sides render
         // with the same content offset and are almost always line-aligned for a small diff.
-        let was_full_file = self.diff.diff_content.is_full_file() && next_mode.is_full_file();
+        let was_full_file = self.diff.diff_content.is_full_file() && next_content.is_full_file();
         let preserved_full_file_scroll = was_full_file.then_some(self.diff.diff_scroll);
         let preserved_full_file_cursor = was_full_file.then_some(self.diff.full_file_cursor);
 
-        self.load_diff(&path, pane, next_mode)?;
+        self.load_diff(&path, pane, next_content)?;
 
         if let Some(file_line) = target_line {
             self.diff.full_file_cursor = file_line
@@ -197,7 +197,7 @@ impl App {
             self.diff.full_file_cursor = preserved_full_file_cursor
                 .unwrap_or(0)
                 .min(self.diff.raw_line_count.saturating_sub(1));
-        } else if next_mode.is_full_file() {
+        } else if next_content.is_full_file() {
             self.diff.full_file_cursor = 0;
         }
         if self.full_file_cursor_active() {
@@ -213,7 +213,7 @@ impl App {
         // A range never survives a side switch, or a drop back into patch view.
         self.diff.full_file_anchor = None;
 
-        self.status_message = Some(match next_mode {
+        self.status_message = Some(match next_content {
             DiffContent::Patch => "Patch view".to_string(),
             DiffContent::FullFile(source) => source.status_message().to_string(),
         });
@@ -233,11 +233,11 @@ impl App {
                 (self.diff.current_file.clone(), self.diff.diff_origin)
             {
                 // An untracked file's tree-preview content is full-file view itself (see
-                // `default_view_mode_for`), so falling back to `Patch` here would
+                // `default_diff_content_for`), so falling back to `Patch` here would
                 // needlessly reload it into the same bat-rendered content under a
                 // different label — go to whichever content the tree would open it in.
-                let tree_preview_mode = self.default_view_mode_for(pane, &path);
-                self.load_diff(&path, pane, tree_preview_mode)?;
+                let tree_preview_content = self.default_diff_content_for(pane, &path);
+                self.load_diff(&path, pane, tree_preview_content)?;
             } else {
                 self.diff.diff_content = DiffContent::Patch;
                 self.diff.content_annotation = None;
@@ -613,12 +613,12 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let title = match &app.diff.current_file {
         Some(path) => {
             if matches!(app.diff.diff_content, DiffContent::FullFile(_)) {
-                let mode_label = app
+                let content_label = app
                     .diff
                     .content_annotation
                     .map(|annotation| annotation.title_label())
                     .unwrap_or_else(|| app.diff.diff_content.label());
-                format!(" {} [{}] [{}] ", path, origin_label, mode_label)
+                format!(" {} [{}] [{}] ", path, origin_label, content_label)
             } else if app.diff.file_diff.is_binary {
                 format!(" {} [{}][binary] ", path, origin_label)
             } else if !app.diff.file_diff.hunks.is_empty() {
