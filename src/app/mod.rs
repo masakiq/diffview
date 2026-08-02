@@ -1651,7 +1651,7 @@ impl App {
             } else {
                 prev_diff_content
             };
-            // Whether the branch above actually swapped modes (Patch -> FullFile due to
+            // Whether the branch above actually switched content (Patch -> FullFile due to
             // the untracked normalization) rather than reloading the same content as before —
             // distinguishes a *fresh* entry into full-file view (full_file_cursor/anchor
             // should stay at the zeroed values `apply_loaded_diff_state` just set, not
@@ -2675,7 +2675,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_help_keeps_enter_for_commit_mode_open() {
+    fn tree_help_keeps_enter_for_commit_target_open() {
         let mut app = make_test_app();
         set_commit(&mut app, "deadbeef");
 
@@ -2722,6 +2722,26 @@ mod tests {
             section.current_node().unwrap().path,
             Path::new("src/nested/file.txt")
         );
+    }
+
+    #[test]
+    fn tree_section_has_untracked_file_matches_only_untracked_non_directory_nodes() {
+        let mut section = TreeSection::new();
+        build_section(
+            &mut section.all_nodes,
+            &[
+                ("a.txt".to_string(), '?', '?'),
+                ("dir/nested.txt".to_string(), '?', '?'),
+                ("tracked.txt".to_string(), ' ', 'M'),
+            ],
+        );
+
+        assert!(section.has_untracked_file("a.txt"));
+        // "dir" is a directory node sharing a path prefix with a real file — the
+        // !is_dir guard is what has_untracked_file actually depends on here.
+        assert!(!section.has_untracked_file("dir"));
+        assert!(!section.has_untracked_file("tracked.txt"));
+        assert!(!section.has_untracked_file("missing.txt"));
     }
 
     #[test]
@@ -2865,7 +2885,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_mode_added_file_is_not_treated_as_unmerged_in_full_file_logic() {
+    fn commit_target_added_file_is_not_treated_as_unmerged_in_full_file_logic() {
         let mut app = make_test_app();
         set_commit(&mut app, "deadbeef");
         seed_unstaged(&mut app, &[("added.txt".to_string(), 'A', 'A')]);
@@ -2925,11 +2945,11 @@ mod tests {
         app.focus = Focus::InlineSelect;
     }
 
-    fn set_patch_mode(app: &mut App) {
+    fn set_patch_content(app: &mut App) {
         app.diff.diff_content = DiffContent::Patch;
     }
 
-    fn set_full_file_mode(app: &mut App, source: FullFileSource) {
+    fn set_full_file_content(app: &mut App, source: FullFileSource) {
         app.diff.diff_content = DiffContent::FullFile(source);
     }
 
@@ -3108,7 +3128,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_title_shows_files_in_commit_mode_and_pane_label_in_working_tree_mode() {
+    fn tree_title_shows_files_in_commit_target_and_pane_label_in_working_tree_target() {
         let mut app = make_test_app();
         assert_eq!(app.tree_title(TreePane::Unstaged), "Unstaged");
         assert_eq!(app.tree_title(TreePane::Staged), "Staged");
@@ -3119,7 +3139,8 @@ mod tests {
     }
 
     #[test]
-    fn diff_origin_label_uses_pane_label_in_working_tree_mode_and_commit_label_in_commit_mode() {
+    fn diff_origin_label_uses_pane_label_in_working_tree_target_and_commit_label_in_commit_target()
+    {
         let mut app = make_test_app();
         assert_eq!(app.diff_origin_label(TreePane::Unstaged), "unstaged");
         assert_eq!(app.diff_origin_label(TreePane::Staged), "staged");
@@ -3161,7 +3182,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_search_uses_cached_display_text_in_raw_mode() {
+    fn diff_search_uses_cached_display_text_in_raw_tool() {
         let mut app = make_test_app();
         app.diff.display_diff = "\u{1b}[31mprin\u{1b}[0m\u{1b}[32mtln!\u{1b}[0m\n".to_string();
         app.diff.cached_display_text = Some(Text::from("println!\n"));
@@ -3220,14 +3241,14 @@ mod tests {
         assert!(app.diff_help_text().contains("[F]prev-file"));
         assert!(!app.diff_help_text().contains("[P]copy-file"));
 
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         assert!(app.diff_help_text().contains("[f]diff"));
         assert!(app.diff_help_text().contains("[F]prev-file"));
         assert!(app.diff_help_text().contains("[P]copy-file"));
         assert!(app.diff_help_text().contains("[v]select"));
         assert!(app.diff_help_text().contains("[y]copy"));
 
-        set_full_file_mode(&mut app, FullFileSource::Previous);
+        set_full_file_content(&mut app, FullFileSource::Previous);
         assert!(app.diff_help_text().contains("[f]file"));
         assert!(app.diff_help_text().contains("[F]diff"));
     }
@@ -3238,7 +3259,7 @@ mod tests {
         seed_unstaged(&mut app, &[("new.txt".to_string(), '?', '?')]);
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.current_file = Some("new.txt".to_string());
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
 
         let help = app.diff_help_text();
         assert!(!help.contains("[f]"));
@@ -3256,7 +3277,7 @@ mod tests {
         seed_unstaged(&mut app, &[("new.txt".to_string(), '?', '?')]);
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.current_file = Some("new.txt".to_string());
-        set_full_file_mode(&mut app, FullFileSource::Previous);
+        set_full_file_content(&mut app, FullFileSource::Previous);
 
         let help = app.diff_help_text();
         assert!(!help.contains("[F]"));
@@ -3271,7 +3292,7 @@ mod tests {
 
         assert_eq!(app.full_file_clipboard_text(), None);
 
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         assert_eq!(app.full_file_clipboard_text(), None);
 
         app.diff.full_file_copyable = true;
@@ -3460,7 +3481,7 @@ mod tests {
     fn apply_patch_cursor_preserves_a_search_matchs_yellow_background() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.display_line_count = 3;
         app.diff.patch_cursor = 1;
 
@@ -3492,7 +3513,7 @@ mod tests {
     fn apply_full_file_cursor_preserves_a_search_matchs_yellow_background() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 3;
         app.diff.full_file_cursor = 1;
@@ -3525,7 +3546,7 @@ mod tests {
     #[test]
     fn apply_full_file_line_bg_preserves_a_search_matchs_yellow_background() {
         let mut app = make_test_app();
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_content_offset = 0;
         app.diff.full_file_highlight_lines = vec![2]; // 1-based file line 2 == row 1 (offset 0)
 
@@ -3783,7 +3804,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_current_diff_normalizes_patch_mode_to_full_file_when_the_file_turns_untracked() {
+    fn reload_current_diff_normalizes_patch_content_to_full_file_when_the_file_turns_untracked() {
         // review_11 Finding 1: a file open in Patch view can turn untracked out from
         // under it (e.g. an external `git rm --cached` while DiffView is open), picked up
         // by `refresh_trees()` right before this reload — normalize to `FullFile(Current)`
@@ -3893,7 +3914,7 @@ mod tests {
         let mut app = make_test_app();
         app.tool = DiffTool::Delta;
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.diff_pane_height = 20;
 
         let wide = "│ 1  │old line 1  │ 1  │new line 1  \n\
@@ -4124,19 +4145,19 @@ mod tests {
     }
 
     #[test]
-    fn patch_cursor_active_requires_diff_view_focus_patch_mode_and_real_content() {
+    fn patch_cursor_active_requires_diff_view_focus_patch_content_and_real_content() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.display_line_count = 10;
         assert!(app.patch_cursor_active());
 
         // Full-file view has its own cursor mechanism (full_file_cursor_active).
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         assert!(!app.patch_cursor_active());
 
         // InlineSelect renders its own cursor over raw_diff via diff_cursor instead.
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         enter_inline_select(&mut app);
         assert!(!app.patch_cursor_active());
 
@@ -4155,7 +4176,7 @@ mod tests {
     fn patch_cursor_j_k_move_and_follow_viewport() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.display_line_count = 100;
         app.diff.diff_pane_height = 5;
         app.diff.patch_cursor = 0;
@@ -4180,7 +4201,7 @@ mod tests {
     fn patch_cursor_ctrl_d_u_jump_by_half_page_and_follow_viewport() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.display_line_count = 100;
         app.diff.diff_pane_height = 10;
         app.diff.patch_cursor = 0;
@@ -4205,7 +4226,7 @@ mod tests {
     fn patch_cursor_gg_and_shift_g_jump_to_first_and_last_line() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.display_line_count = 50;
         app.diff.diff_pane_height = 10;
         app.diff.patch_cursor = 25;
@@ -4228,7 +4249,7 @@ mod tests {
     fn patch_cursor_v_starts_inline_select_at_the_cursors_own_line_for_raw_tool() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Raw;
         app.diff.display_line_count = 20;
         app.diff.diff_scroll = 2;
@@ -4251,7 +4272,7 @@ mod tests {
         // as before the patch cursor existed, rather than landing on an unrelated line.
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Delta;
         app.diff.display_line_count = 20;
         app.diff.diff_scroll = 2;
@@ -4267,10 +4288,10 @@ mod tests {
     }
 
     #[test]
-    fn patch_cursor_v_is_blocked_in_commit_mode() {
+    fn patch_cursor_v_is_blocked_in_commit_target() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Raw;
         set_commit(&mut app, "abc1234567890");
         app.diff.display_line_count = 20;
@@ -4291,7 +4312,7 @@ mod tests {
     fn patch_cursor_v_is_blocked_when_tool_does_not_support_line_ops() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Difftastic;
         app.diff.display_line_count = 20;
         let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n";
@@ -4311,7 +4332,7 @@ mod tests {
     fn patch_cursor_v_is_blocked_when_there_are_no_hunks_to_select() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Raw;
         app.diff.display_line_count = 20;
         app.diff.file_diff = FileDiff::default();
@@ -4353,7 +4374,7 @@ mod tests {
     fn patch_view_search_advances_from_the_patch_cursor_not_the_viewport_scroll() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.display_diff = "aaa\nneedle\nccc\nddd\neee\nneedle\n".to_string();
         app.diff.display_line_count = 6;
         // Viewport scrolled to the top, but the cursor itself sits at row 3 — well past
@@ -4376,7 +4397,7 @@ mod tests {
     fn jump_next_hunk_moves_the_patch_cursor_along_with_the_viewport() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Raw;
         let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new\n@@ -20,2 +20,2 @@\n context2\n-old2\n+new2\n";
         app.diff.file_diff = parse_diff(raw);
@@ -4396,7 +4417,7 @@ mod tests {
     fn patch_cursor_movement_keeps_hunk_cursor_aligned_so_bracket_keys_dont_jump_backward() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Raw;
         app.diff.diff_pane_height = 20;
         let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new\n@@ -20,2 +20,2 @@\n context2\n-old2\n+new2\n@@ -40,2 +40,2 @@\n context3\n-old3\n+new3\n";
@@ -4440,7 +4461,7 @@ mod tests {
         // forward to the second hunk — never backward.
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.tool = DiffTool::Raw;
         app.diff.diff_pane_height = 20;
         let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n context\n-old\n+new\n@@ -20,2 +20,2 @@\n context2\n-old2\n+new2\n@@ -40,2 +40,2 @@\n context3\n-old3\n+new3\n";
@@ -4525,7 +4546,7 @@ mod tests {
     fn follow_active_diff_cursor_reclaims_the_patch_cursor_after_the_pane_shrinks() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.display_line_count = 100;
         app.diff.diff_scroll = 40;
         app.diff.patch_cursor = 55;
@@ -4543,7 +4564,7 @@ mod tests {
     fn follow_active_diff_cursor_reclaims_the_full_file_cursor_after_the_pane_shrinks() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 100;
         app.diff.full_file_content_offset = 3;
@@ -4781,16 +4802,16 @@ mod tests {
     }
 
     #[test]
-    fn full_file_cursor_active_requires_full_file_mode_and_copyable_content() {
+    fn full_file_cursor_active_requires_full_file_content_and_copyable_content() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
         app.diff.raw_line_count = 10;
 
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.full_file_copyable = true;
         assert!(!app.full_file_cursor_active());
 
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = false;
         assert!(!app.full_file_cursor_active());
 
@@ -4811,7 +4832,7 @@ mod tests {
         // `handle_diff_key`) couldn't actually reach.
         let mut app = make_test_app();
         app.diff.raw_line_count = 10;
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
 
         enter_unstaged_tree(&mut app);
@@ -4828,7 +4849,7 @@ mod tests {
     fn full_file_search_highlight_uses_gutter_requires_a_nonzero_content_offset() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 10;
 
@@ -4841,7 +4862,7 @@ mod tests {
         assert!(app.full_file_search_highlight_uses_gutter());
 
         // Outside full-file view entirely, it's irrelevant regardless of the offset.
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         assert!(!app.full_file_search_highlight_uses_gutter());
     }
 
@@ -4849,7 +4870,7 @@ mod tests {
     fn full_file_select_j_k_move_and_follow_viewport() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 100;
         app.diff.full_file_content_offset = 3;
@@ -4876,7 +4897,7 @@ mod tests {
     fn full_file_select_v_toggles_anchor_on_and_off() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 20;
         app.diff.full_file_cursor = 4;
@@ -4896,7 +4917,7 @@ mod tests {
     fn full_file_v_and_y_fall_back_to_unavailable_messages_when_not_copyable() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = false;
 
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
@@ -4917,7 +4938,7 @@ mod tests {
     fn full_file_v_and_y_fall_back_to_unavailable_messages_for_an_empty_file() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         // Copyable content, but there's no line for the cursor to sit on.
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 0;
@@ -5077,7 +5098,7 @@ mod tests {
         enter_diff_view(&mut app);
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.current_file = Some("new.txt".to_string());
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 10;
         app.diff.full_file_cursor = 4;
@@ -5108,7 +5129,7 @@ mod tests {
         enter_diff_view(&mut app);
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.current_file = Some("new.txt".to_string());
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 10;
 
@@ -5134,7 +5155,7 @@ mod tests {
         enter_diff_view(&mut app);
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.current_file = Some("tracked.txt".to_string());
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
 
         seed_cached_view(
             &mut app,
@@ -5161,7 +5182,7 @@ mod tests {
         enter_diff_view(&mut app);
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.current_file = Some("new.txt".to_string());
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
 
         seed_cached_view(
             &mut app,
@@ -5188,7 +5209,7 @@ mod tests {
     fn full_file_h_clears_anchor_and_returns_to_patch_view() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.full_file_anchor = Some(3);
 
@@ -5230,7 +5251,7 @@ mod tests {
     fn full_file_select_ctrl_d_u_jump_by_half_page_and_follow_viewport() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 100;
         app.diff.full_file_content_offset = 3;
@@ -5257,7 +5278,7 @@ mod tests {
     fn full_file_select_gg_and_shift_g_jump_to_first_and_last_line() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 50;
         app.diff.full_file_content_offset = 3;
@@ -5285,7 +5306,7 @@ mod tests {
     fn full_file_lone_g_does_not_jump_and_clears_on_other_key() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 50;
         app.diff.full_file_content_offset = 3;
@@ -5315,7 +5336,7 @@ mod tests {
     fn full_file_modified_g_does_not_complete_or_arm_a_pending_sequence() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 50;
         app.diff.full_file_cursor = 25;
@@ -5342,7 +5363,7 @@ mod tests {
     fn ctrl_g_commit_binding_does_not_leave_a_stale_pending_g_for_the_next_plain_g() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 50;
         app.diff.full_file_cursor = 25;
@@ -5378,7 +5399,7 @@ mod tests {
         // or otherwise disagrees with `handle_diff_key`'s own handling of `Ctrl+g`.
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 50;
         app.diff.full_file_cursor = 25;
@@ -5407,7 +5428,7 @@ mod tests {
         // directory as its cwd.
         app.repo_root = std::env::current_dir().unwrap();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 50;
         // No current_file/diff_origin, so the 'r' refresh below takes the harmless
@@ -5434,7 +5455,7 @@ mod tests {
     fn full_file_select_n_and_shift_n_move_cursor_to_raw_content_matches_only() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_diff = "alpha\nneedle\ngamma".to_string();
         app.diff.raw_line_count = 3;
@@ -5471,7 +5492,7 @@ mod tests {
     fn full_file_search_position_and_target_use_the_cursor_not_the_scroll() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.full_file_copyable = true;
         app.diff.raw_line_count = 10;
 
@@ -5496,7 +5517,7 @@ mod tests {
         let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -10,3 +12,3 @@\n context1\n-removed1\n+added1\n context2\n";
         app.diff.file_diff = parse_diff(raw);
         app.diff.line_infos = App::build_patch_line_infos(raw);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.current_file = Some("file.txt".to_string());
         app.diff.diff_origin = Some(TreePane::Unstaged);
         // Viewport scrolled to the top, cursor sitting 8 rows down the screen at
@@ -5539,7 +5560,7 @@ mod tests {
         let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context1\n-removed1\n+added1\n context2\n";
         app.diff.file_diff = parse_diff(raw);
         app.diff.line_infos = App::build_patch_line_infos(raw);
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.current_file = Some("file.txt".to_string());
         app.diff.diff_origin = Some(TreePane::Unstaged);
         // Cursor sits 8 rows down the patch pane, but the mapped target (file line 3) is
@@ -5570,7 +5591,7 @@ mod tests {
     fn toggle_full_file_view_opens_at_top_when_no_mapping_available() {
         let mut app = make_test_app();
         app.tool = DiffTool::Difftastic;
-        set_patch_mode(&mut app);
+        set_patch_content(&mut app);
         app.diff.current_file = Some("file.txt".to_string());
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.diff_scroll = 42;
@@ -5675,7 +5696,7 @@ mod tests {
     #[test]
     fn toggle_full_file_view_preserves_scroll_between_current_and_previous() {
         let mut app = make_test_app();
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.current_file = Some("file.txt".to_string());
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.diff_scroll = 40;
@@ -5766,7 +5787,7 @@ mod tests {
     fn toggle_full_file_view_clamps_preserved_scroll_to_shorter_side() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.current_file = Some("file.txt".to_string());
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.diff_scroll = 40;
@@ -5799,7 +5820,7 @@ mod tests {
         // of restoring it. The outgoing position must survive the round trip unclamped.
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.current_file = Some("file.txt".to_string());
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.diff_scroll = 91;
@@ -5842,7 +5863,7 @@ mod tests {
     fn toggle_full_file_view_keeps_cursor_visible_when_switching_into_a_shorter_file() {
         let mut app = make_test_app();
         enter_diff_view(&mut app);
-        set_full_file_mode(&mut app, FullFileSource::Current);
+        set_full_file_content(&mut app, FullFileSource::Current);
         app.diff.current_file = Some("file.txt".to_string());
         app.diff.diff_origin = Some(TreePane::Unstaged);
         app.diff.diff_pane_height = 10;
