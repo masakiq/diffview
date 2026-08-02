@@ -38,8 +38,11 @@ src/
 │   └── focus.rs       # ActiveView — Workspace | Diff, derived from Focus
 ├── domain/            # Pure logic — no process spawning, no file I/O
 │   ├── review_target.rs  # ReviewTarget (WorkingTree | Commit)
-│   ├── content.rs        # Full-file content resolution policy (which git object
-│   │                      #   to read, given target/pane/side/file-state); also
+│   ├── content.rs        # Full-file content resolution policy: resolves target/pane/
+│   │                      #   side/file-state to a GitObjectRef (Index|Head|Commit|
+│   │                      #   ParentOfCommit) + path — a semantic request, not a git
+│   │                      #   rev-spec string (infra/git/diff.rs's get_file_content_at_object
+│   │                      #   is the only place that formats "<rev>:path" syntax). Also
 │   │                      #   defines FullFileSource and TreePane (data-only — their
 │   │                      #   `impl` blocks with app-specific behavior stay in
 │   │                      #   app/mod.rs, which imports the types from here)

@@ -251,6 +251,30 @@ pub fn get_file_content_at_rev(rev_colon_path: &str, repo_root: &Path) -> Result
     super::run_git(&["show", rev_colon_path], repo_root)
 }
 
+/// The only place that turns a `GitObjectRef` into `git show`'s `<rev-spec>:path`
+/// syntax — domain code (`domain::content::resolve_full_file_content_target`) stays
+/// free of that formatting and only decides which object, not how to spell it.
+fn rev_spec_for_object(object_ref: &crate::domain::content::GitObjectRef, path: &str) -> String {
+    use crate::domain::content::GitObjectRef;
+
+    match object_ref {
+        GitObjectRef::Index => format!(":{path}"),
+        GitObjectRef::Head => format!("HEAD:{path}"),
+        GitObjectRef::Commit(rev) => format!("{rev}:{path}"),
+        GitObjectRef::ParentOfCommit(rev) => format!("{rev}^:{path}"),
+    }
+}
+
+/// Reads `path` at the Git object `domain::content::resolve_full_file_content_target`
+/// resolved to.
+pub fn get_file_content_at_object(
+    object_ref: &crate::domain::content::GitObjectRef,
+    path: &str,
+    repo_root: &Path,
+) -> Result<String> {
+    get_file_content_at_rev(&rev_spec_for_object(object_ref, path), repo_root)
+}
+
 /// Detect whether an untracked file would be shown as a binary diff.
 pub fn is_binary_untracked_file(path: &str, repo_root: &Path) -> Result<bool> {
     let output = Command::new("git")
@@ -597,6 +621,28 @@ mod tests {
         assert_eq!(content, "hello\nworld\n");
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rev_spec_for_object_formats_each_git_object_ref_variant() {
+        use crate::domain::content::GitObjectRef;
+
+        assert_eq!(rev_spec_for_object(&GitObjectRef::Index, "f.txt"), ":f.txt");
+        assert_eq!(
+            rev_spec_for_object(&GitObjectRef::Head, "f.txt"),
+            "HEAD:f.txt"
+        );
+        assert_eq!(
+            rev_spec_for_object(&GitObjectRef::Commit("deadbeef".to_string()), "f.txt"),
+            "deadbeef:f.txt"
+        );
+        assert_eq!(
+            rev_spec_for_object(
+                &GitObjectRef::ParentOfCommit("deadbeef".to_string()),
+                "f.txt"
+            ),
+            "deadbeef^:f.txt"
+        );
     }
 
     #[test]

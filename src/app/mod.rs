@@ -332,6 +332,17 @@ impl TreeSection {
             .and_then(|&idx| self.all_nodes.get(idx))
     }
 
+    /// Whether `path` names an untracked, non-directory node in this section — the
+    /// tree-search half of `has_untracked_file_in_pane`; the caller still applies the
+    /// Commit-target short circuit (an untracked node never appears in that tree in the
+    /// first place, but the check is cheap insurance and keeps the "no untracked files
+    /// under Commit" invariant visible at the call site rather than buried in here).
+    pub fn has_untracked_file(&self, path: &str) -> bool {
+        self.all_nodes
+            .iter()
+            .any(|n| !n.is_dir && n.path == Path::new(path) && n.is_untracked())
+    }
+
     pub fn rebuild_visible(&mut self) {
         let expanded: std::collections::HashMap<PathBuf, bool> = self
             .all_nodes
@@ -1395,7 +1406,7 @@ impl App {
             &self.rename_sources,
         ) {
             Ok(target) => target,
-            Err(message) => return self.full_file_unavailable_content(message, None),
+            Err(()) => return self.full_file_unavailable_content(source.missing_message(), None),
         };
 
         let file_diff = if file_state.is_untracked {
@@ -1427,10 +1438,14 @@ impl App {
                 }
             }
             FullFileContentTarget::Revision {
-                rev_spec,
+                object_ref,
+                path: object_path,
                 content_annotation,
-            } => match crate::infra::git::diff::get_file_content_at_rev(&rev_spec, &self.repo_root)
-            {
+            } => match crate::infra::git::diff::get_file_content_at_object(
+                &object_ref,
+                &object_path,
+                &self.repo_root,
+            ) {
                 Ok(raw) => {
                     self.rich_full_file_content(path, raw, content_annotation, highlight_lines)
                 }
@@ -1730,16 +1745,7 @@ impl App {
         if self.is_commit() {
             return false;
         }
-        let nodes =
-            self.tree(pane)
-                .all_nodes
-                .iter()
-                .map(|n| crate::domain::content::NodeTrackingState {
-                    path: &n.path,
-                    is_dir: n.is_dir,
-                    is_untracked: n.is_untracked(),
-                });
-        crate::domain::content::has_untracked_file(nodes, path)
+        self.tree(pane).has_untracked_file(path)
     }
 
     /// Which diff content a file selection should open in. An untracked file has no hunks
