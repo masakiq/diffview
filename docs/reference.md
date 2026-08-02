@@ -210,21 +210,29 @@ Full-file view rules:
 - Switching between `FullFile(Current)` and `FullFile(Previous)` while already in full-file view (`f`/`F` pressed there, not from patch view) keeps the current scroll row and cursor line as-is instead of recomputing from the patch pane — both directions (`f`→`F` and `F`→`f`) preserve it. Any active range is cleared on the switch.
 - Lines the underlying diff marks as changed get a background tint, independent of `--tool` (full-file content is rendered via `bat` — falling back to `cat`, or to plain unstyled text if neither is available — never the selected diff tool): the current-side view (`f`) tints added lines dark green, the previous-side view (`F`) tints removed lines dark red. Syntax-highlighted foreground colors are preserved; only the background changes. Unchanged files, or a source where the diff has no hunks to show (e.g. an untracked file), have no tinted lines.
 - When you return to patch view (`f`/`F` pressed while already in the matching full-file view), the file's own remembered scroll position and cursor line are both restored exactly as they were before entering full-file view — not the top of the restored viewport, and not reverse-mapped from wherever the full-file cursor ended up. Navigation made while in full-file view never overwrites this remembered position.
-- `f` opens the current side.
-  - Working Tree / Unstaged: working tree file
-  - Working Tree / Staged: index blob
-  - Commit target: selected commit blob
-  - Exception: an untracked file in Working Tree / Unstaged is already open in full-file view by default (above) and has no patch view to toggle back to — `f` pressed from `FullFile(Current)` is disabled there (a no-op). `f` pressed from `FullFile(Previous)` still works normally, moving back to `FullFile(Current)`.
-- `F` opens the previous side.
-  - Working Tree / Unstaged: index blob
-  - Working Tree / Staged: `HEAD` blob
-  - Commit target: first parent blob
-- If the file does not exist on the requested side, an unavailable message is shown.
-  - Example: pressing `f` on a deleted file
-  - Example: pressing `F` on an added or untracked file
-- Binary files show `Full file view unavailable for binary files`.
-- Unmerged files show `Full file view unavailable for unmerged files`.
-- `v` and `y` are read-only operations, so they work over full-file content under the Commit target too, not just Working Tree.
+
+Which git object `f`/`F` show is decided by three axes: review target, pane (Working Tree
+only), and side (current/previous). A fourth axis, file state, overrides the git-object
+lookup with an unavailable message instead:
+
+| Review Target | Pane | Side | Git object shown |
+|---|---|---|---|
+| Working Tree | Unstaged | Current (`f`) | Working tree file |
+| Working Tree | Unstaged | Previous (`F`) | Index blob |
+| Working Tree | Staged | Current (`f`) | Index blob |
+| Working Tree | Staged | Previous (`F`) | `HEAD` blob |
+| Commit | Files | Current (`f`) | Selected commit blob |
+| Commit | Files | Previous (`F`) | First parent blob |
+
+| File state | Behavior (overrides the table above) |
+|---|---|
+| Untracked (Working Tree / Unstaged only) | Opens directly in full-file view (Current side) by default — no patch view exists to toggle back to, so `f` pressed from `FullFile(Current)` is a no-op there. The Previous side is always unavailable (untracked content never existed on a previous side). |
+| Deleted | `f` (current side) shows an unavailable message — the file no longer exists there. |
+| Added | `F` (previous side) shows an unavailable message — the file didn't exist before. |
+| Binary | `Full file view unavailable for binary files`, on either side. |
+| Unmerged | `Full file view unavailable for unmerged files`, on either side. |
+
+`v` and `y` are read-only operations, so they work over full-file content under the Commit target too, not just Working Tree.
 
 ### Other
 
