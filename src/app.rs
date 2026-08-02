@@ -641,9 +641,9 @@ pub struct App {
 
 impl App {
     pub fn new(tool_override: Option<String>, revision_override: Option<String>) -> Result<Self> {
-        let repo_root = crate::git::get_repo_root()?;
+        let repo_root = crate::infra::git::get_repo_root()?;
         let commit_revision = match normalize_revision_override(revision_override) {
-            Some(rev) => Some(crate::git::resolve_commit(&rev, &repo_root)?),
+            Some(rev) => Some(crate::infra::git::resolve_commit(&rev, &repo_root)?),
             None => None,
         };
 
@@ -2207,8 +2207,10 @@ impl App {
         match action {
             ExternalAction::Commit => {
                 suspend_terminal(terminal)?;
-                let command_result =
-                    crate::git::run_interactive_command(&self.commit_command, &self.repo_root);
+                let command_result = crate::infra::git::run_interactive_command(
+                    &self.commit_command,
+                    &self.repo_root,
+                );
                 resume_terminal(terminal)?;
                 terminal.clear()?;
 

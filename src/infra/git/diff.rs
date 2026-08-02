@@ -184,12 +184,12 @@ pub fn get_raw_diff(path: &str, staged: bool, repo_root: &Path) -> Result<String
     } else {
         vec!["diff", "--", path]
     };
-    crate::git::run_git(&args, repo_root)
+    super::run_git(&args, repo_root)
 }
 
 /// Raw diff for a specific commit and path.
 pub fn get_raw_commit_diff(revision: &str, path: &str, repo_root: &Path) -> Result<String> {
-    crate::git::run_git(
+    super::run_git(
         &["show", "--format=", "--patch", revision, "--", path],
         repo_root,
     )
@@ -248,7 +248,7 @@ pub fn render_content_preview(path: &str, content: &str, repo_root: &Path) -> Re
 
 /// File content at an arbitrary git revision expression such as `HEAD:path` or `:path`.
 pub fn get_file_content_at_rev(rev_colon_path: &str, repo_root: &Path) -> Result<String> {
-    crate::git::run_git(&["show", rev_colon_path], repo_root)
+    super::run_git(&["show", rev_colon_path], repo_root)
 }
 
 /// Detect whether an untracked file would be shown as a binary diff.
