@@ -1,5 +1,6 @@
 mod app;
 mod clipboard;
+mod components;
 mod config;
 mod domain;
 mod infra;

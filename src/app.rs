@@ -3247,21 +3247,21 @@ impl App {
     /// `handle_inline_select_key`'s own j/k viewport-follow logic.
     fn follow_full_file_cursor(&mut self) {
         let display_row = self.full_file_content_offset + self.full_file_cursor;
-        if display_row < self.diff_scroll {
-            self.diff_scroll = display_row;
-        } else if display_row >= self.diff_scroll + self.diff_pane_height {
-            self.diff_scroll = display_row + 1 - self.diff_pane_height;
-        }
+        crate::components::cursor::follow(
+            display_row,
+            &mut self.diff_scroll,
+            self.diff_pane_height,
+        );
     }
 
     /// Same viewport-follow as `follow_full_file_cursor`, for the patch-view cursor —
     /// `patch_cursor` is already a display row itself, with no content-offset to add.
     fn follow_patch_cursor(&mut self) {
-        if self.patch_cursor < self.diff_scroll {
-            self.diff_scroll = self.patch_cursor;
-        } else if self.patch_cursor >= self.diff_scroll + self.diff_pane_height {
-            self.diff_scroll = self.patch_cursor + 1 - self.diff_pane_height;
-        }
+        crate::components::cursor::follow(
+            self.patch_cursor,
+            &mut self.diff_scroll,
+            self.diff_pane_height,
+        );
     }
 
     /// Re-clamps whichever always-on cursor is active into the current viewport. Called
@@ -3328,33 +3328,41 @@ impl App {
                 if self.diff_cursor + 1 < line_count {
                     self.diff_cursor += 1;
                     self.sync_hunk_cursor();
-                    if self.diff_cursor >= self.diff_scroll + self.diff_pane_height {
-                        self.diff_scroll = self.diff_cursor + 1 - self.diff_pane_height;
-                    }
+                    crate::components::cursor::follow(
+                        self.diff_cursor,
+                        &mut self.diff_scroll,
+                        self.diff_pane_height,
+                    );
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.diff_cursor > 0 {
                     self.diff_cursor -= 1;
                     self.sync_hunk_cursor();
-                    if self.diff_cursor < self.diff_scroll {
-                        self.diff_scroll = self.diff_cursor;
-                    }
+                    crate::components::cursor::follow(
+                        self.diff_cursor,
+                        &mut self.diff_scroll,
+                        self.diff_pane_height,
+                    );
                 }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.diff_cursor = (self.diff_cursor + half_page).min(line_count.saturating_sub(1));
                 self.sync_hunk_cursor();
-                if self.diff_cursor >= self.diff_scroll + self.diff_pane_height {
-                    self.diff_scroll = self.diff_cursor + 1 - self.diff_pane_height;
-                }
+                crate::components::cursor::follow(
+                    self.diff_cursor,
+                    &mut self.diff_scroll,
+                    self.diff_pane_height,
+                );
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.diff_cursor = self.diff_cursor.saturating_sub(half_page);
                 self.sync_hunk_cursor();
-                if self.diff_cursor < self.diff_scroll {
-                    self.diff_scroll = self.diff_cursor;
-                }
+                crate::components::cursor::follow(
+                    self.diff_cursor,
+                    &mut self.diff_scroll,
+                    self.diff_pane_height,
+                );
             }
             KeyCode::Char('u')
                 if !key
@@ -3530,11 +3538,11 @@ impl App {
     }
 
     fn ensure_cursor_visible(&mut self) {
-        if self.diff_cursor < self.diff_scroll {
-            self.diff_scroll = self.diff_cursor;
-        } else if self.diff_cursor >= self.diff_scroll + self.diff_pane_height {
-            self.diff_scroll = self.diff_cursor + 1 - self.diff_pane_height;
-        }
+        crate::components::cursor::follow(
+            self.diff_cursor,
+            &mut self.diff_scroll,
+            self.diff_pane_height,
+        );
     }
 }
 
