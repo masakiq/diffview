@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod focus;
-mod statusbar;
 
 pub use focus::ActiveView;
 
