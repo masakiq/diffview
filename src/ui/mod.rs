@@ -43,8 +43,8 @@ pub fn render(f: &mut Frame, app: &App) {
         tree::render(f, app, tree_area, TreePane::Unstaged);
     } else {
         // Split tree area vertically into unstaged (top) and staged (bottom)
-        let unstaged_items = app.unstaged.visible.len() as u32 + 2; // +2 for border
-        let staged_items = app.staged.visible.len() as u32 + 2;
+        let unstaged_items = app.tree.unstaged.visible.len() as u32 + 2; // +2 for border
+        let staged_items = app.tree.staged.visible.len() as u32 + 2;
         let total = unstaged_items + staged_items;
 
         let tree_split = Layout::default()

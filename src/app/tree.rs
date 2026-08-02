@@ -116,9 +116,9 @@ impl App {
         if can_move {
             self.tree_mut(pane).cursor += 1;
             true
-        } else if !self.is_commit() && pane == TreePane::Unstaged && !self.staged.is_empty() {
+        } else if !self.is_commit() && pane == TreePane::Unstaged && !self.tree.staged.is_empty() {
             self.focus = Focus::Staged;
-            self.staged.cursor = 0;
+            self.tree.staged.cursor = 0;
             true
         } else {
             false
@@ -139,9 +139,9 @@ impl App {
         if can_move {
             self.tree_mut(pane).cursor -= 1;
             true
-        } else if !self.is_commit() && pane == TreePane::Staged && !self.unstaged.is_empty() {
+        } else if !self.is_commit() && pane == TreePane::Staged && !self.tree.unstaged.is_empty() {
             self.focus = Focus::Unstaged;
-            self.unstaged.cursor = self.unstaged.visible.len().saturating_sub(1);
+            self.tree.unstaged.cursor = self.tree.unstaged.visible.len().saturating_sub(1);
             true
         } else {
             false
@@ -214,7 +214,7 @@ impl App {
         match pane {
             TreePane::Unstaged => {
                 if is_dir {
-                    let files = self.unstaged.files_under_dir(Path::new(&path));
+                    let files = self.tree.unstaged.files_under_dir(Path::new(&path));
                     for file in &files {
                         let _ = crate::infra::git::apply::stage_file(file, &self.repo_root);
                     }
@@ -231,7 +231,7 @@ impl App {
             }
             TreePane::Staged => {
                 if is_dir {
-                    let files = self.staged.files_under_dir(Path::new(&path));
+                    let files = self.tree.staged.files_under_dir(Path::new(&path));
                     for file in &files {
                         let _ = crate::infra::git::apply::unstage_file(file, &self.repo_root);
                     }
@@ -306,10 +306,10 @@ impl App {
         self.refresh_trees()?;
 
         match prev_focus {
-            Focus::Unstaged if self.unstaged.is_empty() && !self.staged.is_empty() => {
+            Focus::Unstaged if self.tree.unstaged.is_empty() && !self.tree.staged.is_empty() => {
                 self.focus = Focus::Staged;
             }
-            Focus::Staged if self.staged.is_empty() && !self.unstaged.is_empty() => {
+            Focus::Staged if self.tree.staged.is_empty() && !self.tree.unstaged.is_empty() => {
                 self.focus = Focus::Unstaged;
             }
             _ => {}

@@ -320,6 +320,7 @@ impl TreeNode {
 
 // ─── TreeSection ──────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone)]
 pub struct TreeSection {
     pub all_nodes: Vec<TreeNode>,
     pub visible: Vec<usize>,
@@ -468,6 +469,31 @@ impl TreeSection {
     }
 }
 
+/// Holds both tree sections. Physically a step toward `views/tree/` (plan.md section 4-1),
+/// but the Commit-target "Files" section still reuses `unstaged`/`staged` == empty, same
+/// as before this type existed — the `TreeSections` split (Commit's `files` as its own
+/// field, not a reuse of `unstaged`) is a separate, not-yet-done step (plan.md section 6-0).
+#[derive(Debug, Clone)]
+pub struct TreeViewState {
+    pub unstaged: TreeSection,
+    pub staged: TreeSection,
+}
+
+impl TreeViewState {
+    pub fn new() -> Self {
+        Self {
+            unstaged: TreeSection::new(),
+            staged: TreeSection::new(),
+        }
+    }
+}
+
+impl Default for TreeViewState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─── Line mapping for inline-select ─────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -562,8 +588,7 @@ pub struct App {
     pending_action: Option<ExternalAction>,
 
     // Tree sections
-    pub unstaged: TreeSection,
-    pub staged: TreeSection,
+    pub tree: TreeViewState,
     /// New path → pre-rename/copy path, for every file `refresh_trees` currently reports
     /// with a `previous_path` (status `R`/`C`). A rename/copy's `path` is always the new
     /// one; looking up its `Previous` content needs the tree/HEAD blob at the old path
@@ -655,8 +680,7 @@ impl App {
             commit_key,
             commit_command,
             pending_action: None,
-            unstaged: TreeSection::new(),
-            staged: TreeSection::new(),
+            tree: TreeViewState::new(),
             rename_sources: HashMap::new(),
             diff_origin: None,
             diff_content: DiffContent::Patch,
@@ -699,7 +723,7 @@ impl App {
         app.refresh_trees()?;
 
         // Auto-focus: if unstaged is empty but staged has items, start in staged
-        if !app.is_commit() && app.unstaged.is_empty() && !app.staged.is_empty() {
+        if !app.is_commit() && app.tree.unstaged.is_empty() && !app.tree.staged.is_empty() {
             app.focus = Focus::Staged;
         }
 
@@ -828,8 +852,8 @@ impl App {
 
     pub fn tree(&self, pane: TreePane) -> &TreeSection {
         match pane {
-            TreePane::Unstaged => &self.unstaged,
-            TreePane::Staged => &self.staged,
+            TreePane::Unstaged => &self.tree.unstaged,
+            TreePane::Staged => &self.tree.staged,
         }
     }
 
@@ -845,8 +869,8 @@ impl App {
 
     pub(super) fn tree_mut(&mut self, pane: TreePane) -> &mut TreeSection {
         match pane {
-            TreePane::Unstaged => &mut self.unstaged,
-            TreePane::Staged => &mut self.staged,
+            TreePane::Unstaged => &mut self.tree.unstaged,
+            TreePane::Staged => &mut self.tree.staged,
         }
     }
 
@@ -900,12 +924,12 @@ impl App {
                 .map(|f| (f.path, f.staged, f.unstaged))
                 .collect();
 
-            build_section(&mut self.unstaged.all_nodes, &commit_files);
-            rebuild_section_visible(&mut self.unstaged);
+            build_section(&mut self.tree.unstaged.all_nodes, &commit_files);
+            rebuild_section_visible(&mut self.tree.unstaged);
 
-            self.staged.all_nodes.clear();
-            self.staged.visible.clear();
-            self.staged.cursor = 0;
+            self.tree.staged.all_nodes.clear();
+            self.tree.staged.visible.clear();
+            self.tree.staged.cursor = 0;
             if self.focus == Focus::Staged {
                 self.focus = Focus::Unstaged;
             }
@@ -930,11 +954,11 @@ impl App {
             }
         }
 
-        build_section(&mut self.unstaged.all_nodes, &unstaged_files);
-        rebuild_section_visible(&mut self.unstaged);
+        build_section(&mut self.tree.unstaged.all_nodes, &unstaged_files);
+        rebuild_section_visible(&mut self.tree.unstaged);
 
-        build_section(&mut self.staged.all_nodes, &staged_files);
-        rebuild_section_visible(&mut self.staged);
+        build_section(&mut self.tree.staged.all_nodes, &staged_files);
+        rebuild_section_visible(&mut self.tree.staged);
 
         Ok(())
     }
@@ -1761,10 +1785,12 @@ impl App {
             };
         } else {
             match prev_focus {
-                Focus::Unstaged if self.unstaged.is_empty() && !self.staged.is_empty() => {
+                Focus::Unstaged
+                    if self.tree.unstaged.is_empty() && !self.tree.staged.is_empty() =>
+                {
                     self.focus = Focus::Staged;
                 }
-                Focus::Staged if self.staged.is_empty() && !self.unstaged.is_empty() => {
+                Focus::Staged if self.tree.staged.is_empty() && !self.tree.unstaged.is_empty() => {
                     self.focus = Focus::Unstaged;
                 }
                 _ => {
@@ -1835,7 +1861,7 @@ impl App {
     fn tree_linear_position(&self, pane: TreePane, node_idx: usize) -> usize {
         match pane {
             TreePane::Unstaged => node_idx,
-            TreePane::Staged => self.unstaged.all_nodes.len() + node_idx,
+            TreePane::Staged => self.tree.unstaged.all_nodes.len() + node_idx,
         }
     }
 
@@ -1846,18 +1872,17 @@ impl App {
     ) -> Option<(TreePane, usize)> {
         match scope {
             SearchScope::WorkingTree => {
-                let unstaged_len = self.unstaged.all_nodes.len();
+                let unstaged_len = self.tree.unstaged.all_nodes.len();
                 if position < unstaged_len {
                     Some((TreePane::Unstaged, position))
                 } else {
                     let staged_idx = position.checked_sub(unstaged_len)?;
-                    (staged_idx < self.staged.all_nodes.len())
+                    (staged_idx < self.tree.staged.all_nodes.len())
                         .then_some((TreePane::Staged, staged_idx))
                 }
             }
-            SearchScope::CommitTree => {
-                (position < self.unstaged.all_nodes.len()).then_some((TreePane::Unstaged, position))
-            }
+            SearchScope::CommitTree => (position < self.tree.unstaged.all_nodes.len())
+                .then_some((TreePane::Unstaged, position)),
             _ => None,
         }
     }
@@ -2819,8 +2844,7 @@ mod tests {
             commit_key: KeyBinding::default_commit(),
             commit_command: vec!["git".to_string(), "commit".to_string(), "-v".to_string()],
             pending_action: None,
-            unstaged: TreeSection::new(),
-            staged: TreeSection::new(),
+            tree: TreeViewState::new(),
             rename_sources: HashMap::new(),
             diff_origin: None,
             diff_content: DiffContent::Patch,
@@ -2891,13 +2915,13 @@ mod tests {
     }
 
     fn seed_unstaged(app: &mut App, files: &[(String, char, char)]) {
-        build_section(&mut app.unstaged.all_nodes, files);
-        rebuild_section_visible(&mut app.unstaged);
+        build_section(&mut app.tree.unstaged.all_nodes, files);
+        rebuild_section_visible(&mut app.tree.unstaged);
     }
 
     fn seed_staged(app: &mut App, files: &[(String, char, char)]) {
-        build_section(&mut app.staged.all_nodes, files);
-        rebuild_section_visible(&mut app.staged);
+        build_section(&mut app.tree.staged.all_nodes, files);
+        rebuild_section_visible(&mut app.tree.staged);
     }
 
     #[test]
@@ -2908,6 +2932,7 @@ mod tests {
 
         let matches = app.collect_search_matches(SearchScope::WorkingTree, "beta");
         let staged_file_idx = app
+            .tree
             .staged
             .all_nodes
             .iter()
@@ -2927,6 +2952,7 @@ mod tests {
         seed_staged(&mut app, &[("src/beta.rs".to_string(), 'M', ' ')]);
 
         let staged_file_idx = app
+            .tree
             .staged
             .all_nodes
             .iter()
@@ -2938,7 +2964,7 @@ mod tests {
 
         assert_eq!(app.focus, Focus::Staged);
         assert_eq!(
-            app.staged.current_node().unwrap().path,
+            app.tree.staged.current_node().unwrap().path,
             Path::new("src/beta.rs")
         );
     }
@@ -2956,6 +2982,7 @@ mod tests {
 
         let matches = app.collect_search_matches(SearchScope::WorkingTree, "src");
         let src_dir_idx = app
+            .tree
             .unstaged
             .all_nodes
             .iter()
@@ -2980,16 +3007,20 @@ mod tests {
         );
 
         let tests_file_vis_idx = app
+            .tree
             .unstaged
             .visible
             .iter()
-            .position(|&idx| app.unstaged.all_nodes[idx].path == Path::new("tests/beta.rs"))
+            .position(|&idx| app.tree.unstaged.all_nodes[idx].path == Path::new("tests/beta.rs"))
             .unwrap();
-        app.unstaged.cursor = tests_file_vis_idx;
+        app.tree.unstaged.cursor = tests_file_vis_idx;
 
         app.apply_confirmed_search(SearchScope::WorkingTree, "src".to_string());
 
-        assert_eq!(app.unstaged.current_node().unwrap().path, Path::new("src"));
+        assert_eq!(
+            app.tree.unstaged.current_node().unwrap().path,
+            Path::new("src")
+        );
     }
 
     #[test]
@@ -3004,14 +3035,15 @@ mod tests {
         );
 
         let src_dir_idx = app
+            .tree
             .unstaged
             .all_nodes
             .iter()
             .position(|node| node.is_dir && node.path == Path::new("src"))
             .unwrap();
-        app.unstaged.all_nodes[src_dir_idx].expanded = false;
-        rebuild_section_visible(&mut app.unstaged);
-        app.unstaged.cursor = 0;
+        app.tree.unstaged.all_nodes[src_dir_idx].expanded = false;
+        rebuild_section_visible(&mut app.tree.unstaged);
+        app.tree.unstaged.cursor = 0;
         app.search_state = Some(SearchState {
             scope: SearchScope::WorkingTree,
             query: "nested".to_string(),
@@ -3019,10 +3051,10 @@ mod tests {
 
         app.navigate_search(true);
 
-        let current = app.unstaged.current_node().unwrap();
+        let current = app.tree.unstaged.current_node().unwrap();
         assert!(current.is_dir);
         assert_eq!(current.path, Path::new("src/nested"));
-        assert!(app.unstaged.all_nodes[src_dir_idx].expanded);
+        assert!(app.tree.unstaged.all_nodes[src_dir_idx].expanded);
     }
 
     #[test]
@@ -3116,14 +3148,14 @@ mod tests {
     fn files_under_dir_collects_nested_untracked_files() {
         let mut app = make_test_app();
         build_section(
-            &mut app.unstaged.all_nodes,
+            &mut app.tree.unstaged.all_nodes,
             &[
                 ("hoge/a.txt".to_string(), '?', '?'),
                 ("hoge/nested/b.txt".to_string(), '?', '?'),
             ],
         );
 
-        let files = app.unstaged.files_under_dir(Path::new("hoge"));
+        let files = app.tree.unstaged.files_under_dir(Path::new("hoge"));
 
         assert_eq!(
             files,
@@ -4918,7 +4950,7 @@ mod tests {
     fn l_key_opens_an_untracked_file_directly_in_full_file_view_instead_of_patch() {
         let mut app = make_test_app();
         seed_unstaged(&mut app, &[("new.txt".to_string(), '?', '?')]);
-        app.unstaged.move_cursor_to_first_file();
+        app.tree.unstaged.move_cursor_to_first_file();
         enter_unstaged_tree(&mut app);
 
         seed_cached_view(
@@ -4947,7 +4979,7 @@ mod tests {
         // `full_file_cursor_active_requires_diff_view_focus`).
         let mut app = make_test_app();
         seed_unstaged(&mut app, &[("new.txt".to_string(), '?', '?')]);
-        app.unstaged.move_cursor_to_first_file();
+        app.tree.unstaged.move_cursor_to_first_file();
         enter_unstaged_tree(&mut app);
 
         seed_cached_view(
@@ -4979,7 +5011,7 @@ mod tests {
         // over and could sit past the end of a much shorter file.
         let mut app = make_test_app();
         seed_unstaged(&mut app, &[("new.txt".to_string(), '?', '?')]);
-        app.unstaged.move_cursor_to_first_file();
+        app.tree.unstaged.move_cursor_to_first_file();
         enter_unstaged_tree(&mut app);
         app.full_file_cursor = 400;
         app.full_file_anchor = Some(350);
@@ -5523,7 +5555,7 @@ mod tests {
         // patch view is `get_file_preview`'s rendering of the file's own content instead,
         // so `untracked_patch_line_target` must be the one filling in `target_line`.
         build_section(
-            &mut app.unstaged.all_nodes,
+            &mut app.tree.unstaged.all_nodes,
             &[("file.txt".to_string(), '?', '?')],
         );
 
