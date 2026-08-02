@@ -62,12 +62,12 @@ src/
 │   ├── mod.rs              # Top-level layout split + render() dispatch
 │   ├── tree/mod.rs           # Tree pane: handle_tree_key + render
 │   ├── diff/
-│   │   ├── mod.rs              # Diff pane: handle_diff_key + render; owns the loaded
-│   │   │                        #   document (raw_diff/file_diff/line_infos) that
-│   │   │                        #   inline_select.rs also reads
-│   │   └── inline_select.rs      # Line-select handler — a child module of diff/, not an
-│   │                              #   independent view, so it can read diff/mod.rs's
-│   │                              #   private document fields directly
+│   │   ├── mod.rs              # Diff pane: handle_diff_key + render; operates on
+│   │   │                        #   App's `diff: DiffViewState` (raw_diff/file_diff/
+│   │   │                        #   line_infos — defined in app/mod.rs) via `self.diff.*`
+│   │   └── inline_select.rs      # Line-select handler, reached via Focus::InlineSelect;
+│   │                              #   also `impl App`, reads/writes the same
+│   │                              #   `self.diff.*` fields as diff/mod.rs
 │   └── statusbar/mod.rs      # Status bar: help-text builders + render
 ├── clipboard.rs         # OS clipboard (pbcopy/xclip/etc.)
 └── config.rs             # config.toml parsing
@@ -92,9 +92,9 @@ methods that exist mainly for a specific view to call.
 
 ### Key Types & Their Roles
 
-- **`App`** (`app/mod.rs`): Central state. Owns `tree: TreeViewState`, `diff: DiffViewState`, focus state, review target (`commit_revision`), and the event loop (`run()`/`handle_key()`). Per-view key handlers and render functions live in `views/`, as additional `impl App` blocks and free functions — not on `App` itself.
+- **`App`** (`app/mod.rs`): Central state. Owns `tree: TreeViewState`, `diff: DiffViewState`, focus state, review target (`commit_revision`), and the event loop (`run()`/`handle_key()`). Per-view key handlers and render functions are declared in `views/*.rs` — still `impl App` blocks (i.e. still methods of `App`), just organized by screen instead of all living in `app/mod.rs`, plus a free `render()` function per module.
 - **`TreeViewState`** (`app/mod.rs`): Wraps the `unstaged`/`staged` `TreeSection`s. The Commit target still reuses `unstaged` for its "Files" section rather than having its own field — see `TreeViewState`'s doc comment for the not-yet-done follow-up.
-- **`DiffViewState`** (`app/mod.rs`): The loaded diff document (`raw_diff`/`file_diff`/`line_infos`), the three cursor spaces that read it (`patch_cursor`/`diff_cursor`/`full_file_cursor` — distinct row spaces, see each field's doc comment), and the diff/scroll caches. `views/diff/inline_select.rs` reads this directly as a child module of `views/diff/`.
+- **`DiffViewState`** (`app/mod.rs`): The loaded diff document (`raw_diff`/`file_diff`/`line_infos`), the three cursor spaces that read it (`patch_cursor`/`diff_cursor`/`full_file_cursor` — distinct row spaces, see each field's doc comment), and the diff/scroll caches. All fields are `pub`. It lives on `App` (`app.diff`), not on `views/diff/`; both `views/diff/mod.rs` and `views/diff/inline_select.rs` reach it the same way, via `self.diff.*` on `App`.
 - **`TreeSection`**: Manages `all_nodes: Vec<TreeNode>` + `visible: Vec<usize>` (indices into all_nodes). Folding works by filtering visible indices based on ancestor expansion state.
 - **`Focus`** enum: `Unstaged | Staged | DiffView | InlineSelect` — determines which key handler runs.
 - **`ActiveView`** (`app/focus.rs`): `Workspace | Diff` — a coarser grouping derived from `Focus` (`App::active_view()`), used for the top-level render split. `InlineSelect` maps to `Diff`: it's a subview of the Diff screen, not an independent active view.
@@ -104,7 +104,7 @@ methods that exist mainly for a specific view to call.
 
 ### Layout
 
-The UI splits into: left tree pane (1/4 width) + right diff pane (3/4 width) + bottom status bar (1 line). Rendering is in `views/mod.rs::render()`, which dispatches to `views::tree::render`, `views::diff::render`, and `views::statusbar::render`.
+The UI splits into: left tree pane + right diff pane + bottom status bar (1 line). The tree pane defaults to 20% width and is configurable via `diff.tree_width_percentage` (clamped to 10–90, see `config.rs`'s `DiffConfig::tree_width_percentage()`). Rendering is in `views/mod.rs::render()`, which dispatches to `views::tree::render`, `views::diff::render`, and `views::statusbar::render`.
 
 - Working tree target: left tree pane is vertically split into unstaged/staged sections
 - Commit target: left tree pane is a single file tree section (`Files`)
@@ -136,7 +136,10 @@ The trickiest part of the codebase. Two distinct patch builders:
 
 ## Configuration
 
-`~/.config/diffview/config.toml` — only `diff.tool` setting (`"raw"` | `"delta"` | `"difftastic"`). CLI `--tool` flag overrides config.
+`~/.config/diffview/config.toml`, under a `[diff]` table:
+- `tool` (`"raw"` | `"delta"` | `"difftastic"`, default `"raw"`) — CLI `--tool` flag overrides this
+- `tree_width_percentage` (default `20`, clamped to 10–90 at read time) — see [Layout](#layout)
+- `[diff.commit]` sub-table: `key` (default `"C"`) and `command` (default `["git", "commit", "-v"]`) — the commit-action keybinding and the command it runs
 
 ## Diff Tool Constraints
 

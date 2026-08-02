@@ -60,7 +60,6 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | ------- | ---------------------------------- |
 | `h` `l` | Switch focus between tree and diff |
 | `r`     | Refresh to latest git state        |
-| `?`     | Show key binding help              |
 | `q`     | Quit                               |
 
 ### File Tree (left pane)
@@ -76,6 +75,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `c`       | Copy selected file path                             |
 | `/`       | Start tree search                                   |
 | `n` / `N` | Jump to next / previous match                       |
+| `?`       | Show key binding help                               |
 | `C`       | Run the commit command (`git commit -v` by default) |
 
 > Commit (`diffview <REV>`) is read-only: `Enter` opens diff, no stage/unstage operations.
@@ -101,7 +101,7 @@ The default view for a tracked file: the `git diff` hunks, with an always-on lin
 | `n` / `N` | Jump to next / previous match                          |
 | `f`       | Switch to full-file view (current side)                |
 | `F`       | Switch to full-file view (previous side)               |
-| `v`       | Enter Line-Select at the cursor's line                 |
+| `v`       | Enter Inline Select at the cursor's line               |
 | `C`       | Run the commit command (`git commit -v` by default)    |
 
 ### Diff View — Full File (right pane)
@@ -135,7 +135,7 @@ no patch of its own).
 > of content on either side.
 > `v` and `y` are read-only, so they also work over full-file content under the Commit target.
 
-### Line-Select (started with `v`)
+### Inline Select (started with `v`)
 
 | Key       | Action                        |
 | --------- | ----------------------------- |
@@ -146,11 +146,11 @@ no patch of its own).
 | `/`       | Start pane-local search       |
 | `n` / `N` | Jump to next / previous match |
 | `]` / `[` | Jump between hunks            |
-| `v`       | Exit Line-Select              |
+| `v`       | Exit Inline Select            |
 
 > Search is case-insensitive in every pane.
 
-> Line-Select is unavailable under the commit target.
+> Inline Select is unavailable under the commit target.
 
 ## File Status Indicators
 
