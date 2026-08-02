@@ -1,4 +1,3 @@
-pub mod diff;
 pub mod statusbar;
 
 use ratatui::{
@@ -22,7 +21,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let status_area = vert[1];
 
     if app.active_view() == ActiveView::Diff {
-        diff::render(f, app, main_area);
+        views::diff::render(f, app, main_area);
         statusbar::render(f, app, status_area);
         return;
     }
@@ -61,6 +60,6 @@ pub fn render(f: &mut Frame, app: &App) {
         views::tree::render(f, app, unstaged_area, TreePane::Unstaged);
         views::tree::render(f, app, staged_area, TreePane::Staged);
     }
-    diff::render(f, app, diff_area);
+    views::diff::render(f, app, diff_area);
     statusbar::render(f, app, status_area);
 }

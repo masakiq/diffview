@@ -16,7 +16,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-mod diff;
 mod focus;
 mod statusbar;
 
@@ -118,7 +117,7 @@ impl FullFileSource {
         }
     }
 
-    fn status_message(self) -> &'static str {
+    pub(crate) fn status_message(self) -> &'static str {
         match self {
             FullFileSource::Current => "Full file view",
             FullFileSource::Previous => "Previous full file view",
@@ -145,11 +144,11 @@ impl DiffContent {
         }
     }
 
-    fn is_full_file(self) -> bool {
+    pub(crate) fn is_full_file(self) -> bool {
         matches!(self, DiffContent::FullFile(_))
     }
 
-    fn toggle_full_file(self, source: FullFileSource) -> Self {
+    pub(crate) fn toggle_full_file(self, source: FullFileSource) -> Self {
         match self {
             DiffContent::FullFile(current) if current == source => DiffContent::Patch,
             _ => DiffContent::FullFile(source),
@@ -1608,7 +1607,7 @@ impl App {
     }
 
     /// Reload diff for the current file with the current origin
-    fn reload_current_diff(&mut self) -> Result<()> {
+    pub(crate) fn reload_current_diff(&mut self) -> Result<()> {
         if let (Some(path), Some(pane)) = (self.diff.current_file.clone(), self.diff.diff_origin) {
             let prev_scroll = self.diff.diff_scroll;
             let prev_cursor = self.diff.diff_cursor;
@@ -2284,7 +2283,7 @@ impl App {
     /// current caller clamps the result against `raw_line_count`/`display_line_count`
     /// before using it, so this is safe today — but a future caller that skips that clamp
     /// would target a nonexistent line.
-    fn patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
+    pub(crate) fn patch_top_line_target(&self, source: FullFileSource) -> Option<usize> {
         match self.tool {
             DiffTool::Raw => self.raw_patch_top_line_target(source),
             DiffTool::Delta => self.delta_patch_top_line_target(source),
@@ -2298,7 +2297,7 @@ impl App {
     /// content full-file view shows. So the patch cursor's row, minus that rendering's own
     /// leading decoration (threaded into `full_file_content_offset` for exactly this case by
     /// `load_diff`), is directly the file line it sits on.
-    fn untracked_patch_line_target(&self, path: &str, pane: TreePane) -> Option<usize> {
+    pub(crate) fn untracked_patch_line_target(&self, path: &str, pane: TreePane) -> Option<usize> {
         self.has_untracked_file_in_pane(pane, path).then(|| {
             self.diff
                 .patch_cursor
@@ -2527,7 +2526,7 @@ fn build_section(target_nodes: &mut Vec<TreeNode>, files: &[(String, char, char)
 /// keystroke entirely (e.g. a configurable `commit.key = "ctrl-g"` binding): they must neither
 /// complete a pending sequence as if they were a second plain `g`, nor leave one armed for a
 /// later unrelated `g` to complete.
-fn is_plain_g(key: KeyEvent) -> bool {
+pub(crate) fn is_plain_g(key: KeyEvent) -> bool {
     key.code == KeyCode::Char('g')
         && !key
             .modifiers
@@ -3443,7 +3442,7 @@ mod tests {
         app.diff.display_line_count = 3;
         app.diff.patch_cursor = 1;
 
-        let overlaid = crate::ui::diff::apply_patch_cursor(row_with_a_search_match(), &app, 40);
+        let overlaid = crate::views::diff::apply_patch_cursor(row_with_a_search_match(), &app, 40);
 
         let cursor_line = &overlaid.lines[1];
         let match_span = cursor_line
@@ -3476,7 +3475,8 @@ mod tests {
         app.diff.raw_line_count = 3;
         app.diff.full_file_cursor = 1;
 
-        let overlaid = crate::ui::diff::apply_full_file_cursor(row_with_a_search_match(), &app, 40);
+        let overlaid =
+            crate::views::diff::apply_full_file_cursor(row_with_a_search_match(), &app, 40);
 
         let cursor_line = &overlaid.lines[1];
         let match_span = cursor_line
@@ -3508,7 +3508,7 @@ mod tests {
         app.diff.full_file_highlight_lines = vec![2]; // 1-based file line 2 == row 1 (offset 0)
 
         let overlaid =
-            crate::ui::diff::apply_full_file_line_bg(row_with_a_search_match(), &app, 40);
+            crate::views::diff::apply_full_file_line_bg(row_with_a_search_match(), &app, 40);
 
         let tinted_line = &overlaid.lines[1];
         let match_span = tinted_line
