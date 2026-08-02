@@ -2546,11 +2546,11 @@ impl App {
                 if is_dir {
                     let files = self.unstaged.files_under_dir(Path::new(&path));
                     for file in &files {
-                        let _ = crate::git::apply::stage_file(file, &self.repo_root);
+                        let _ = crate::infra::git::apply::stage_file(file, &self.repo_root);
                     }
                     self.status_message = Some(format!("Staged directory: {}", path));
                 } else {
-                    match crate::git::apply::stage_file(&path, &self.repo_root) {
+                    match crate::infra::git::apply::stage_file(&path, &self.repo_root) {
                         Ok(_) => self.status_message = Some(format!("Staged: {}", path)),
                         Err(e) => {
                             self.error_message = Some(format!("Error: {}", e));
@@ -2563,11 +2563,11 @@ impl App {
                 if is_dir {
                     let files = self.staged.files_under_dir(Path::new(&path));
                     for file in &files {
-                        let _ = crate::git::apply::unstage_file(file, &self.repo_root);
+                        let _ = crate::infra::git::apply::unstage_file(file, &self.repo_root);
                     }
                     self.status_message = Some(format!("Unstaged directory: {}", path));
                 } else {
-                    match crate::git::apply::unstage_file(&path, &self.repo_root) {
+                    match crate::infra::git::apply::unstage_file(&path, &self.repo_root) {
                         Ok(_) => self.status_message = Some(format!("Unstaged: {}", path)),
                         Err(e) => {
                             self.error_message = Some(format!("Error: {}", e));
@@ -3458,10 +3458,10 @@ impl App {
 
         let result = match pane {
             TreePane::Unstaged => {
-                crate::git::apply::stage_lines(&file, &hunk, &selected, &self.repo_root)
+                crate::infra::git::apply::stage_lines(&file, &hunk, &selected, &self.repo_root)
             }
             TreePane::Staged => {
-                crate::git::apply::unstage_lines(&file, &hunk, &selected, &self.repo_root)
+                crate::infra::git::apply::unstage_lines(&file, &hunk, &selected, &self.repo_root)
             }
         };
 

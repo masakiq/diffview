@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-pub mod apply;
 pub mod diff;
 
 pub fn run_git(args: &[&str], cwd: &Path) -> Result<String> {
