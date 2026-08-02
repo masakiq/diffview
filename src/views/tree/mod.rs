@@ -1,11 +1,18 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    layout::Rect,
+    style::{Color, Style},
+    widgets::{Block, Borders, List, ListItem, ListState},
+    Frame,
+};
 use std::path::Path;
 
 use crate::app::{App, ExternalAction, Focus, TreePane, TREE_FAST_MOVE_LINES};
+use crate::components::tree_row::render_row;
 
 impl App {
-    pub(super) fn handle_tree_key(&mut self, key: KeyEvent) -> Result<()> {
+    pub(crate) fn handle_tree_key(&mut self, key: KeyEvent) -> Result<()> {
         if !matches!(
             key.code,
             KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up
@@ -157,7 +164,7 @@ impl App {
     }
 
     /// l key: expand dir (and move cursor to first child) or open file diff
-    pub(super) fn tree_action_right(&mut self) -> Result<()> {
+    pub(crate) fn tree_action_right(&mut self) -> Result<()> {
         let pane = match self.focused_pane() {
             Some(p) => p,
             None => return Ok(()),
@@ -270,7 +277,7 @@ impl App {
     }
 
     /// Load diff preview when cursor moves in tree
-    pub(super) fn tree_load_preview(&mut self) {
+    pub(crate) fn tree_load_preview(&mut self) {
         let pane = match self.focused_pane() {
             Some(p) => p,
             None => return,
@@ -278,7 +285,7 @@ impl App {
         self.tree_load_preview_for_pane(pane);
     }
 
-    pub(super) fn tree_load_preview_for_pane(&mut self, pane: TreePane) {
+    pub(crate) fn tree_load_preview_for_pane(&mut self, pane: TreePane) {
         let (is_dir, path) = {
             let section = self.tree(pane);
             match section.current_node() {
@@ -318,4 +325,61 @@ impl App {
         self.tree_load_preview();
         Ok(())
     }
+}
+
+pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
+    let focused = app.is_tree_focused(pane);
+    let tree = app.tree(pane);
+    let show_cursor = focused;
+
+    let border_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let pane_label = app.tree_title(pane);
+    let title = if tree.visible.is_empty() {
+        format!(" {} (0) ", pane_label)
+    } else {
+        format!(" {} ({}) ", pane_label, tree.file_count())
+    };
+
+    if tree.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title);
+        f.render_widget(block, area);
+        return;
+    }
+
+    let is_commit = app.is_commit();
+    let search_query = app.tree_search_query(pane);
+    let items: Vec<ListItem> = tree
+        .visible
+        .iter()
+        .enumerate()
+        .map(|(display_idx, &node_idx)| {
+            let node = &tree.all_nodes[node_idx];
+            let is_selected = show_cursor && display_idx == tree.cursor;
+            render_row(node, pane, is_selected, is_commit, search_query)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let mut list_state = ListState::default();
+    if show_cursor && !tree.is_empty() {
+        list_state.select(Some(tree.cursor));
+    }
+
+    f.render_stateful_widget(list, area, &mut list_state);
 }

@@ -5,6 +5,7 @@ mod config;
 mod domain;
 mod infra;
 mod ui;
+mod views;
 
 use anyhow::Result;
 use clap::Parser;

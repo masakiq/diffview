@@ -19,7 +19,6 @@ use std::time::{Duration, Instant};
 mod diff;
 mod focus;
 mod statusbar;
-mod tree;
 
 pub use focus::ActiveView;
 
@@ -397,7 +396,7 @@ impl TreeSection {
     }
 
     /// Expand a directory and move cursor to its first child
-    fn expand_and_enter(&mut self) {
+    pub(crate) fn expand_and_enter(&mut self) {
         let cursor_vis_idx = self.cursor;
         let node_idx = match self.visible.get(cursor_vis_idx) {
             Some(&idx) => idx,
@@ -418,7 +417,7 @@ impl TreeSection {
     }
 
     /// Fold the parent directory of the current node
-    fn fold_parent(&mut self) {
+    pub(crate) fn fold_parent(&mut self) {
         let current_path = match self.current_node() {
             Some(n) => n.path.clone(),
             None => return,
@@ -442,7 +441,7 @@ impl TreeSection {
     }
 
     /// Collect all file paths under a directory node (for batch stage/unstage)
-    fn files_under_dir(&self, dir_path: &Path) -> Vec<String> {
+    pub(crate) fn files_under_dir(&self, dir_path: &Path) -> Vec<String> {
         self.all_nodes
             .iter()
             .filter(|n| !n.is_dir && n.path.starts_with(dir_path))
@@ -506,13 +505,13 @@ pub struct DisplayLineInfo {
 pub use crate::domain::content::FileSelectionState;
 
 #[derive(Debug, Clone)]
-struct PendingTreePreview {
+pub(crate) struct PendingTreePreview {
     pane: TreePane,
     ready_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExternalAction {
+pub(super) enum ExternalAction {
     Commit,
 }
 
@@ -565,7 +564,7 @@ pub use crate::domain::content::FullFileContentTarget;
 
 const DIFF_CACHE_CAPACITY: usize = 64;
 const TREE_PREVIEW_DEBOUNCE_MS: u64 = 100;
-const TREE_FAST_MOVE_LINES: usize = 5;
+pub(crate) const TREE_FAST_MOVE_LINES: usize = 5;
 const NULL_COMMIT_OID: &str = "0000000000000000000000000000000000000000";
 
 fn normalize_revision_override(revision_override: Option<String>) -> Option<String> {
@@ -585,7 +584,7 @@ pub struct App {
     tree_pane_percentage: u16,
     commit_key: KeyBinding,
     commit_command: Vec<String>,
-    pending_action: Option<ExternalAction>,
+    pub(super) pending_action: Option<ExternalAction>,
 
     // Tree sections
     pub tree: TreeViewState,
@@ -628,7 +627,7 @@ pub struct App {
     pending_g: bool,
     pub diff_pane_height: usize,
     pub diff_pane_width: u16,
-    pending_tree_preview: Option<PendingTreePreview>,
+    pub(super) pending_tree_preview: Option<PendingTreePreview>,
     tree_preview_debounce: Duration,
     diff_cache: HashMap<DiffCacheKey, CachedDiff>,
     diff_cache_order: VecDeque<DiffCacheKey>,

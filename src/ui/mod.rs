@@ -1,6 +1,5 @@
 pub mod diff;
 pub mod statusbar;
-pub mod tree;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -8,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{ActiveView, App, TreePane};
+use crate::views;
 
 pub fn render(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -40,7 +40,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let diff_area = horiz[1];
 
     if app.is_commit() {
-        tree::render(f, app, tree_area, TreePane::Unstaged);
+        views::tree::render(f, app, tree_area, TreePane::Unstaged);
     } else {
         // Split tree area vertically into unstaged (top) and staged (bottom)
         let unstaged_items = app.tree.unstaged.visible.len() as u32 + 2; // +2 for border
@@ -58,8 +58,8 @@ pub fn render(f: &mut Frame, app: &App) {
         let unstaged_area = tree_split[0];
         let staged_area = tree_split[1];
 
-        tree::render(f, app, unstaged_area, TreePane::Unstaged);
-        tree::render(f, app, staged_area, TreePane::Staged);
+        views::tree::render(f, app, unstaged_area, TreePane::Unstaged);
+        views::tree::render(f, app, staged_area, TreePane::Staged);
     }
     diff::render(f, app, diff_area);
     statusbar::render(f, app, status_area);
