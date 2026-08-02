@@ -16,6 +16,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod tree;
+
 use crate::clipboard;
 use crate::config::Config;
 use crate::domain::diff::{parse_diff, DiffLine, FileDiff};
@@ -890,7 +892,7 @@ impl App {
         "[j/k]move [Ctrl-U/D]jump [u]apply [v]back [h]tree [/]search [n/N]match [[]/[]]hunk [r]refresh [q]quit".to_string()
     }
 
-    fn can_trigger_commit_action(&self, key: KeyEvent) -> bool {
+    pub(super) fn can_trigger_commit_action(&self, key: KeyEvent) -> bool {
         !self.is_commit()
             && self.commit_key.matches(key)
             && matches!(
@@ -918,14 +920,14 @@ impl App {
         }
     }
 
-    fn tree_mut(&mut self, pane: TreePane) -> &mut TreeSection {
+    pub(super) fn tree_mut(&mut self, pane: TreePane) -> &mut TreeSection {
         match pane {
             TreePane::Unstaged => &mut self.unstaged,
             TreePane::Staged => &mut self.staged,
         }
     }
 
-    fn focused_pane(&self) -> Option<TreePane> {
+    pub(super) fn focused_pane(&self) -> Option<TreePane> {
         if self.is_commit() {
             return match self.focus {
                 Focus::Unstaged => Some(TreePane::Unstaged),
@@ -1123,7 +1125,7 @@ impl App {
         self.diff_cache_order.push_back(key);
     }
 
-    fn clear_diff_cache(&mut self) {
+    pub(super) fn clear_diff_cache(&mut self) {
         self.diff_cache.clear();
         self.diff_cache_order.clear();
     }
@@ -1674,7 +1676,7 @@ impl App {
         Ok(())
     }
 
-    fn clear_diff(&mut self) {
+    pub(super) fn clear_diff(&mut self) {
         self.remember_current_diff_scroll();
         self.diff_content = DiffContent::Patch;
         self.display_diff.clear();
@@ -1831,7 +1833,7 @@ impl App {
     /// it in patch view first is just a redundant step before the inevitable `f` press.
     /// Skip straight to full-file view instead, where `v`/`y` line-range select already
     /// works; tracked files still open in patch view as before.
-    fn default_view_mode_for(&self, pane: TreePane, path: &str) -> DiffContent {
+    pub(super) fn default_view_mode_for(&self, pane: TreePane, path: &str) -> DiffContent {
         if self.has_untracked_file_in_pane(pane, path) {
             DiffContent::FullFile(FullFileSource::Current)
         } else {
@@ -1854,7 +1856,7 @@ impl App {
         }
     }
 
-    fn schedule_tree_preview(&mut self, pane: TreePane) {
+    pub(super) fn schedule_tree_preview(&mut self, pane: TreePane) {
         self.pending_tree_preview = Some(PendingTreePreview {
             pane,
             ready_at: Instant::now() + self.tree_preview_debounce,
@@ -2103,7 +2105,7 @@ impl App {
         }
     }
 
-    fn begin_search(&mut self) {
+    pub(super) fn begin_search(&mut self) {
         let Some(scope) = self.current_search_scope() else {
             return;
         };
@@ -2144,7 +2146,7 @@ impl App {
         }
     }
 
-    fn navigate_search(&mut self, forward: bool) {
+    pub(super) fn navigate_search(&mut self, forward: bool) {
         let Some(scope) = self.current_search_scope() else {
             return;
         };
@@ -2352,270 +2354,6 @@ impl App {
 
     // ─── Tree key handling ──────────────────────────────────────────────
 
-    fn handle_tree_key(&mut self, key: KeyEvent) -> Result<()> {
-        if !matches!(
-            key.code,
-            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up
-        ) {
-            self.pending_tree_preview = None;
-        }
-
-        if self.can_trigger_commit_action(key) {
-            self.pending_action = Some(ExternalAction::Commit);
-            return Ok(());
-        }
-
-        match key.code {
-            KeyCode::Char('q') => {
-                self.should_quit = true;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.tree_move_down();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.tree_move_up();
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.tree_move_half_page_down();
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.tree_move_half_page_up();
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.tree_action_right()?;
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.tree_action_left();
-            }
-            KeyCode::Char('u')
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.tree_stage_or_unstage()?;
-            }
-            KeyCode::Enter if self.is_commit() => {
-                self.tree_action_right()?;
-            }
-            KeyCode::Char('c') => {
-                self.tree_copy_path_to_clipboard();
-            }
-            KeyCode::Char('/') => {
-                self.begin_search();
-            }
-            KeyCode::Char('n') => {
-                self.navigate_search(true);
-            }
-            KeyCode::Char('N') => {
-                self.navigate_search(false);
-            }
-            KeyCode::Char('?') => {
-                self.status_message = Some(self.tree_help_text());
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn tree_move_down(&mut self) {
-        let moved = self.tree_step_down();
-        self.finish_tree_move(moved);
-    }
-
-    fn tree_move_up(&mut self) {
-        let moved = self.tree_step_up();
-        self.finish_tree_move(moved);
-    }
-
-    fn tree_move_half_page_down(&mut self) {
-        let mut moved = false;
-        for _ in 0..TREE_FAST_MOVE_LINES {
-            if !self.tree_step_down() {
-                break;
-            }
-            moved = true;
-        }
-        self.finish_tree_move(moved);
-    }
-
-    fn tree_move_half_page_up(&mut self) {
-        let mut moved = false;
-        for _ in 0..TREE_FAST_MOVE_LINES {
-            if !self.tree_step_up() {
-                break;
-            }
-            moved = true;
-        }
-        self.finish_tree_move(moved);
-    }
-
-    fn tree_step_down(&mut self) -> bool {
-        let pane = match self.focused_pane() {
-            Some(p) => p,
-            None => return false,
-        };
-
-        let can_move = {
-            let tree = self.tree(pane);
-            !tree.is_empty() && tree.cursor + 1 < tree.visible.len()
-        };
-
-        if can_move {
-            self.tree_mut(pane).cursor += 1;
-            true
-        } else if !self.is_commit() && pane == TreePane::Unstaged && !self.staged.is_empty() {
-            self.focus = Focus::Staged;
-            self.staged.cursor = 0;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn tree_step_up(&mut self) -> bool {
-        let pane = match self.focused_pane() {
-            Some(p) => p,
-            None => return false,
-        };
-
-        let can_move = {
-            let tree = self.tree(pane);
-            tree.cursor > 0
-        };
-
-        if can_move {
-            self.tree_mut(pane).cursor -= 1;
-            true
-        } else if !self.is_commit() && pane == TreePane::Staged && !self.unstaged.is_empty() {
-            self.focus = Focus::Unstaged;
-            self.unstaged.cursor = self.unstaged.visible.len().saturating_sub(1);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn finish_tree_move(&mut self, moved: bool) {
-        if moved {
-            if let Some(next_pane) = self.focused_pane() {
-                self.schedule_tree_preview(next_pane);
-            }
-        }
-    }
-
-    /// l key: expand dir (and move cursor to first child) or open file diff
-    fn tree_action_right(&mut self) -> Result<()> {
-        let pane = match self.focused_pane() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        let (is_dir, path) = {
-            let section = self.tree(pane);
-            match section.current_node() {
-                Some(n) => (n.is_dir, n.path.to_string_lossy().to_string()),
-                None => return Ok(()),
-            }
-        };
-
-        if is_dir {
-            self.tree_mut(pane).expand_and_enter();
-            self.tree_load_preview();
-        } else {
-            let view_mode = self.default_view_mode_for(pane, &path);
-            self.load_diff(&path, pane, view_mode)?;
-            self.focus = Focus::DiffView;
-        }
-        Ok(())
-    }
-
-    /// h key: fold the parent directory of the current node
-    fn tree_action_left(&mut self) {
-        let pane = match self.focused_pane() {
-            Some(p) => p,
-            None => return,
-        };
-
-        self.tree_mut(pane).fold_parent();
-    }
-
-    /// Stage or unstage the selected file or directory in the working tree target.
-    fn tree_stage_or_unstage(&mut self) -> Result<()> {
-        if self.is_commit() {
-            return self.tree_action_right();
-        }
-
-        let pane = match self.focused_pane() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        let (is_dir, path) = {
-            let section = self.tree(pane);
-            match section.current_node() {
-                Some(n) => (n.is_dir, n.path.to_string_lossy().to_string()),
-                None => return Ok(()),
-            }
-        };
-
-        match pane {
-            TreePane::Unstaged => {
-                if is_dir {
-                    let files = self.unstaged.files_under_dir(Path::new(&path));
-                    for file in &files {
-                        let _ = crate::infra::git::apply::stage_file(file, &self.repo_root);
-                    }
-                    self.status_message = Some(format!("Staged directory: {}", path));
-                } else {
-                    match crate::infra::git::apply::stage_file(&path, &self.repo_root) {
-                        Ok(_) => self.status_message = Some(format!("Staged: {}", path)),
-                        Err(e) => {
-                            self.error_message = Some(format!("Error: {}", e));
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            TreePane::Staged => {
-                if is_dir {
-                    let files = self.staged.files_under_dir(Path::new(&path));
-                    for file in &files {
-                        let _ = crate::infra::git::apply::unstage_file(file, &self.repo_root);
-                    }
-                    self.status_message = Some(format!("Unstaged directory: {}", path));
-                } else {
-                    match crate::infra::git::apply::unstage_file(&path, &self.repo_root) {
-                        Ok(_) => self.status_message = Some(format!("Unstaged: {}", path)),
-                        Err(e) => {
-                            self.error_message = Some(format!("Error: {}", e));
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
-        self.refresh_after_tree_op()?;
-        Ok(())
-    }
-
-    fn tree_copy_path_to_clipboard(&mut self) {
-        let pane = match self.focused_pane() {
-            Some(p) => p,
-            None => return,
-        };
-
-        let path = {
-            let section = self.tree(pane);
-            match section.current_node() {
-                Some(n) => n.path.to_string_lossy().to_string(),
-                None => return,
-            }
-        };
-
-        self.copy_path_to_clipboard(&path);
-    }
-
     fn diff_copy_path_to_clipboard(&mut self) {
         let path = match self.current_file.clone() {
             Some(path) => path,
@@ -2655,61 +2393,11 @@ impl App {
         }
     }
 
-    fn copy_path_to_clipboard(&mut self, path: &str) {
+    pub(super) fn copy_path_to_clipboard(&mut self, path: &str) {
         match clipboard::copy_text(path) {
             Ok(_) => self.status_message = Some(format!("Copied path: {}", path)),
             Err(e) => self.error_message = Some(format!("Clipboard error: {}", e)),
         }
-    }
-
-    /// Load diff preview when cursor moves in tree
-    fn tree_load_preview(&mut self) {
-        let pane = match self.focused_pane() {
-            Some(p) => p,
-            None => return,
-        };
-        self.tree_load_preview_for_pane(pane);
-    }
-
-    fn tree_load_preview_for_pane(&mut self, pane: TreePane) {
-        let (is_dir, path) = {
-            let section = self.tree(pane);
-            match section.current_node() {
-                Some(n) => (n.is_dir, n.path.to_string_lossy().to_string()),
-                None => {
-                    self.clear_diff();
-                    return;
-                }
-            }
-        };
-
-        if is_dir {
-            return;
-        }
-
-        let view_mode = self.default_view_mode_for(pane, &path);
-        let _ = self.load_diff(&path, pane, view_mode);
-    }
-
-    fn refresh_after_tree_op(&mut self) -> Result<()> {
-        self.clear_diff_cache();
-        self.pending_tree_preview = None;
-
-        let prev_focus = self.focus.clone();
-        self.refresh_trees()?;
-
-        match prev_focus {
-            Focus::Unstaged if self.unstaged.is_empty() && !self.staged.is_empty() => {
-                self.focus = Focus::Staged;
-            }
-            Focus::Staged if self.staged.is_empty() && !self.unstaged.is_empty() => {
-                self.focus = Focus::Unstaged;
-            }
-            _ => {}
-        }
-
-        self.tree_load_preview();
-        Ok(())
     }
 
     /// File line number (1-based) that the patch pane's cursor row (`patch_cursor`)
