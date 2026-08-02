@@ -123,7 +123,7 @@ impl FullFileSource {
         }
     }
 
-    fn missing_message(self) -> &'static str {
+    pub(crate) fn missing_message(self) -> &'static str {
         match self {
             FullFileSource::Current => {
                 "Full file view unavailable: file does not exist in current state"
@@ -155,22 +155,7 @@ impl DiffContent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentAnnotation {
-    BeforeDelete,
-    BinaryUnavailable,
-    UnmergedUnavailable,
-}
-
-impl ContentAnnotation {
-    pub fn title_label(self) -> &'static str {
-        match self {
-            ContentAnnotation::BeforeDelete => "file:before-delete",
-            ContentAnnotation::BinaryUnavailable => "binary",
-            ContentAnnotation::UnmergedUnavailable => "unmerged",
-        }
-    }
-}
+pub use crate::domain::content::ContentAnnotation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchScope {
@@ -489,12 +474,7 @@ pub struct DisplayLineInfo {
     pub is_selectable: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileSelectionState {
-    status: char,
-    is_unmerged: bool,
-    is_untracked: bool,
-}
+pub use crate::domain::content::FileSelectionState;
 
 #[derive(Debug, Clone)]
 struct PendingTreePreview {
@@ -552,14 +532,7 @@ struct LoadedContent {
     full_file_highlight_lines: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum FullFileContentTarget {
-    Worktree,
-    Revision {
-        rev_spec: String,
-        content_annotation: Option<ContentAnnotation>,
-    },
-}
+pub use crate::domain::content::FullFileContentTarget;
 
 const DIFF_CACHE_CAPACITY: usize = 64;
 const TREE_PREVIEW_DEBOUNCE_MS: u64 = 100;
@@ -1338,80 +1311,6 @@ impl App {
         parse_diff(&raw)
     }
 
-    fn full_file_missing_message(
-        &self,
-        file_state: FileSelectionState,
-        source: FullFileSource,
-    ) -> Option<&'static str> {
-        match (source, file_state.status) {
-            (FullFileSource::Current, 'D') => Some(FullFileSource::Current.missing_message()),
-            (FullFileSource::Previous, 'A' | '?') => {
-                Some(FullFileSource::Previous.missing_message())
-            }
-            _ => None,
-        }
-    }
-
-    fn resolve_full_file_content_target(
-        &self,
-        path: &str,
-        pane: TreePane,
-        file_state: FileSelectionState,
-        source: FullFileSource,
-    ) -> Result<FullFileContentTarget, &'static str> {
-        if let Some(message) = self.full_file_missing_message(file_state, source) {
-            return Err(message);
-        }
-
-        let content_annotation =
-            matches!((source, file_state.status), (FullFileSource::Previous, 'D'))
-                .then_some(ContentAnnotation::BeforeDelete);
-
-        if let Some(rev) = self.commit_revision.as_deref() {
-            let rev_spec = match source {
-                FullFileSource::Current => format!("{}:{}", rev, path),
-                FullFileSource::Previous => {
-                    format!("{}^:{}", rev, self.previous_content_path(path))
-                }
-            };
-            return Ok(FullFileContentTarget::Revision {
-                rev_spec,
-                content_annotation,
-            });
-        }
-
-        match (pane, source) {
-            (TreePane::Unstaged, FullFileSource::Current) => Ok(FullFileContentTarget::Worktree),
-            (TreePane::Unstaged, FullFileSource::Previous) => Ok(FullFileContentTarget::Revision {
-                // The index already holds a staged rename/copy under its new path (that's
-                // what "staged" means), so unlike the Staged-pane/commit-target cases below,
-                // no `rename_sources` lookup is needed here.
-                rev_spec: format!(":{}", path),
-                content_annotation,
-            }),
-            (TreePane::Staged, FullFileSource::Current) => Ok(FullFileContentTarget::Revision {
-                rev_spec: format!(":{}", path),
-                content_annotation: None,
-            }),
-            (TreePane::Staged, FullFileSource::Previous) => Ok(FullFileContentTarget::Revision {
-                rev_spec: format!("HEAD:{}", self.previous_content_path(path)),
-                content_annotation,
-            }),
-        }
-    }
-
-    /// `path` as it existed before a staged/committed rename or copy, or `path` itself when
-    /// there was none. A rename/copy's `path` is always the new one, but `HEAD`/`<rev>^`
-    /// only ever have the file at its old path — `resolve_full_file_content_target`'s two
-    /// `Previous` branches that read from `HEAD`/`<rev>^` (not the index or worktree, which
-    /// already reflect the rename) need this instead of `path` directly.
-    fn previous_content_path<'a>(&'a self, path: &'a str) -> &'a str {
-        self.rename_sources
-            .get(path)
-            .map(String::as_str)
-            .unwrap_or(path)
-    }
-
     fn load_full_file_content(
         &mut self,
         path: &str,
@@ -1432,7 +1331,14 @@ impl App {
             );
         }
 
-        let target = match self.resolve_full_file_content_target(path, pane, file_state, source) {
+        let target = match crate::domain::content::resolve_full_file_content_target(
+            path,
+            pane,
+            file_state,
+            source,
+            &self.target(),
+            &self.rename_sources,
+        ) {
             Ok(target) => target,
             Err(message) => return self.full_file_unavailable_content(message, None),
         };
@@ -1761,10 +1667,7 @@ impl App {
         if self.is_commit() {
             return false;
         }
-        self.tree(pane)
-            .all_nodes
-            .iter()
-            .any(|n| !n.is_dir && n.path == Path::new(path) && n.is_untracked())
+        crate::domain::content::has_untracked_file(&self.tree(pane).all_nodes, path)
     }
 
     /// Which diff content a file selection should open in. An untracked file has no hunks
@@ -3198,175 +3101,6 @@ mod tests {
         assert_eq!(
             files,
             vec!["hoge/a.txt".to_string(), "hoge/nested/b.txt".to_string()]
-        );
-    }
-
-    #[test]
-    fn resolve_full_file_target_uses_previous_side_for_deleted_files() {
-        let mut app = make_test_app();
-        let deleted = FileSelectionState {
-            status: 'D',
-            is_unmerged: false,
-            is_untracked: false,
-        };
-
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "gone.txt",
-                TreePane::Unstaged,
-                deleted,
-                FullFileSource::Previous,
-            ),
-            Ok(FullFileContentTarget::Revision {
-                rev_spec: ":gone.txt".to_string(),
-                content_annotation: Some(ContentAnnotation::BeforeDelete),
-            })
-        );
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "gone.txt",
-                TreePane::Staged,
-                deleted,
-                FullFileSource::Previous,
-            ),
-            Ok(FullFileContentTarget::Revision {
-                rev_spec: "HEAD:gone.txt".to_string(),
-                content_annotation: Some(ContentAnnotation::BeforeDelete),
-            })
-        );
-
-        set_commit(&mut app, "deadbeef");
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "gone.txt",
-                TreePane::Unstaged,
-                deleted,
-                FullFileSource::Previous,
-            ),
-            Ok(FullFileContentTarget::Revision {
-                rev_spec: "deadbeef^:gone.txt".to_string(),
-                content_annotation: Some(ContentAnnotation::BeforeDelete),
-            })
-        );
-    }
-
-    #[test]
-    fn resolve_full_file_target_uses_previous_path_for_renamed_files() {
-        let mut app = make_test_app();
-        app.rename_sources
-            .insert("new.rs".to_string(), "old.rs".to_string());
-        let renamed = FileSelectionState {
-            status: 'R',
-            is_unmerged: false,
-            is_untracked: false,
-        };
-
-        // Staged/Previous reads from HEAD, which only has the file under its old path.
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "new.rs",
-                TreePane::Staged,
-                renamed,
-                FullFileSource::Previous,
-            ),
-            Ok(FullFileContentTarget::Revision {
-                rev_spec: "HEAD:old.rs".to_string(),
-                content_annotation: None,
-            })
-        );
-
-        // Unstaged/Previous reads from the index, which already has the rename staged
-        // under the new path — no rename_sources lookup needed, unlike the Staged case.
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "new.rs",
-                TreePane::Unstaged,
-                renamed,
-                FullFileSource::Previous,
-            ),
-            Ok(FullFileContentTarget::Revision {
-                rev_spec: ":new.rs".to_string(),
-                content_annotation: None,
-            })
-        );
-
-        // Current always reads from wherever the file lives today (the new path) on
-        // both sides — a rename never changes that.
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "new.rs",
-                TreePane::Staged,
-                renamed,
-                FullFileSource::Current,
-            ),
-            Ok(FullFileContentTarget::Revision {
-                rev_spec: ":new.rs".to_string(),
-                content_annotation: None,
-            })
-        );
-
-        // The Commit target's Previous reads from the parent commit, which also only has the
-        // file under its old path.
-        set_commit(&mut app, "deadbeef");
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "new.rs",
-                TreePane::Unstaged,
-                renamed,
-                FullFileSource::Previous,
-            ),
-            Ok(FullFileContentTarget::Revision {
-                rev_spec: "deadbeef^:old.rs".to_string(),
-                content_annotation: None,
-            })
-        );
-    }
-
-    #[test]
-    fn resolve_full_file_target_rejects_missing_current_and_previous_states() {
-        let app = make_test_app();
-        let deleted = FileSelectionState {
-            status: 'D',
-            is_unmerged: false,
-            is_untracked: false,
-        };
-        let added = FileSelectionState {
-            status: 'A',
-            is_unmerged: false,
-            is_untracked: false,
-        };
-        let untracked = FileSelectionState {
-            status: '?',
-            is_unmerged: false,
-            is_untracked: true,
-        };
-
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "gone.txt",
-                TreePane::Unstaged,
-                deleted,
-                FullFileSource::Current,
-            ),
-            Err(FullFileSource::Current.missing_message())
-        );
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "new.txt",
-                TreePane::Staged,
-                added,
-                FullFileSource::Previous,
-            ),
-            Err(FullFileSource::Previous.missing_message())
-        );
-        assert_eq!(
-            app.resolve_full_file_content_target(
-                "scratch.txt",
-                TreePane::Unstaged,
-                untracked,
-                FullFileSource::Previous,
-            ),
-            Err(FullFileSource::Previous.missing_message())
         );
     }
 
