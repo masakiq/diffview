@@ -17,8 +17,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod diff;
+mod focus;
 mod statusbar;
 mod tree;
+
+pub use focus::ActiveView;
 
 use crate::clipboard;
 use crate::config::Config;
@@ -735,6 +738,13 @@ impl App {
 
     pub fn is_commit(&self) -> bool {
         self.target().is_commit()
+    }
+
+    pub fn active_view(&self) -> ActiveView {
+        match self.focus {
+            Focus::Unstaged | Focus::Staged => ActiveView::Workspace,
+            Focus::DiffView | Focus::InlineSelect => ActiveView::Diff,
+        }
     }
 
     pub fn commit_label(&self) -> Option<String> {
@@ -3023,6 +3033,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.pending_action, Some(ExternalAction::Commit));
+    }
+
+    #[test]
+    fn active_view_groups_unstaged_staged_as_workspace_and_diffview_inline_select_as_diff() {
+        let mut app = make_test_app();
+
+        enter_unstaged_tree(&mut app);
+        assert_eq!(app.active_view(), ActiveView::Workspace);
+
+        enter_staged_tree(&mut app);
+        assert_eq!(app.active_view(), ActiveView::Workspace);
+
+        enter_diff_view(&mut app);
+        assert_eq!(app.active_view(), ActiveView::Diff);
+
+        enter_inline_select(&mut app);
+        assert_eq!(app.active_view(), ActiveView::Diff);
     }
 
     #[test]

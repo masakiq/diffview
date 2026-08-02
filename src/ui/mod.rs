@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, TreePane};
+use crate::app::{ActiveView, App, TreePane};
 
 pub fn render(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -21,7 +21,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let main_area = vert[0];
     let status_area = vert[1];
 
-    if matches!(app.focus, Focus::DiffView | Focus::InlineSelect) {
+    if app.active_view() == ActiveView::Diff {
         diff::render(f, app, main_area);
         statusbar::render(f, app, status_area);
         return;
