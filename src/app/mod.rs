@@ -2187,7 +2187,7 @@ impl App {
             }
 
             self.flush_pending_tree_preview_if_due();
-            terminal.draw(|f| crate::ui::render(f, self))?;
+            terminal.draw(|f| crate::views::render(f, self))?;
 
             let poll_timeout = self.event_poll_timeout();
             if crossterm::event::poll(poll_timeout)? {
