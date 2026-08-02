@@ -90,20 +90,32 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `k` / `↑` | Scroll up one line                                  |
 | `Ctrl+D`  | Scroll down half a page                             |
 | `Ctrl+U`  | Scroll up half a page                               |
-| `g`       | Jump to top                                         |
+| `gg`      | Jump to top                                         |
 | `G`       | Jump to bottom                                      |
 | `c`       | Copy the displayed file path                        |
 | `/`       | Start pane-local search                             |
 | `n` / `N` | Jump to next / previous match                       |
-| `f`       | Toggle patch view / full-file view                  |
+| `f`       | Toggle patch view / full-file view (for an untracked file in Working Tree / Unstaged, `f` from `FullFile(current)` is a no-op instead of returning to patch view — see note) |
 | `P`       | Copy the opened full file contents                  |
 | `]`       | Jump to next hunk                                   |
 | `[`       | Jump to previous hunk                               |
-| `v`       | Enter line-select mode                              |
+| `v`       | Patch view: enter line-select mode. Full-file view: start/cancel a line range. |
+| `y`       | Full-file view: copy the selected range (or just the cursor's line) |
 | `C`       | Run the commit command (`git commit -v` by default) |
 
-> `f` is available only in Diff View. The tree-pane preview always stays in patch mode.
-> In full-file view, `v`, `]`, and `[` are unavailable.
+> `f`/`F` are available only in Diff View. The tree-pane preview stays in patch mode for
+> a tracked file; for an untracked file (Working Tree / Unstaged only) it opens directly
+> in full-file view instead, since patch mode has nothing of its own to show there.
+> For such a file, only the specific step back to patch view is blocked — pressing `f`
+> from `FullFile(current)` (or a second `F` from `FullFile(previous)`) is a no-op, since
+> there's no separate patch view to land in — but `f` and `F` still move freely between
+> `FullFile(current)` and `FullFile(previous)` itself (the latter always shows the
+> previous-side-unavailable message for such a file, since it never existed before this
+> change).
+> Full-file view always shows a line cursor over real content while Diff View is
+> focused; `j`/`k`, `Ctrl+D`/`Ctrl+U`, and `gg`/`G` move it directly instead of just
+> scrolling. `]` and `[` are unavailable there.
+> `v` and `y` are read-only, so they also work over full-file content in Commit Mode.
 > `P` is available only in full-file view and copies the raw file contents.
 > Deleted files show the pre-delete contents when full-file view is available.
 

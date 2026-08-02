@@ -55,6 +55,7 @@ The UI splits into: left tree pane (1/4 width) + right diff pane (3/4 width) + b
 
 - Working tree mode tree operations use `u` for stage/unstage on files and directories
 - InlineSelect uses `u` to apply the selected lines
+- Full-file view (`f`/`F`, still `Focus::DiffView`) always shows a line cursor over real content; `v` starts/cancels a line range and `y` copies it — read-only, so it works in Commit Mode too, unlike InlineSelect
 - Commit mode keeps `Enter` as an open shortcut in the tree, equivalent to `l`
 
 ### Partial Patch System (`git/apply.rs`)
