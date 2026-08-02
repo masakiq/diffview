@@ -8,7 +8,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex, etc.) when 
 ```bash
 cargo build --release          # Release build
 cargo build                    # Debug build
-cargo test                     # Run all tests (11 tests across diff, apply, status modules)
+cargo test                     # Run all tests (171 tests, spread across domain/, infra/, components/, views/, and app/mod.rs)
 cargo test test_parse_hunk     # Run a single test by name
 cargo clippy --all-targets     # Lint
 cargo fmt                      # Format
@@ -25,6 +25,59 @@ Requires rustc 1.88+. If compilation fails with syntax errors, run `rustup updat
 
 Rust TUI application for interacting with git diffs. Uses ratatui + crossterm for the terminal UI, with ANSI color support via ansi-to-tui.
 
+### Module Map
+
+```
+src/
+├── main.rs          # CLI parsing, terminal setup/restore, App::new() + App::run()
+├── app/
+│   ├── mod.rs        # App struct (owns TreeViewState + DiffViewState), event loop
+│   │                  #   (run/handle_key), and cross-view logic not yet split out:
+│   │                  #   diff cache, content-resolution glue, search routing,
+│   │                  #   tree-preview debounce
+│   └── focus.rs       # ActiveView — Workspace | Diff, derived from Focus
+├── domain/            # Pure logic — no process spawning, no file I/O
+│   ├── review_target.rs  # ReviewTarget (WorkingTree | Commit)
+│   ├── content.rs        # Full-file content resolution policy (which git object
+│   │                      #   to read, given target/pane/side/file-state)
+│   ├── diff.rs             # FileDiff/Hunk/DiffLine + parse_diff and friends
+│   ├── patch.rs             # build_hunk_patch/build_partial_patch/build_reverse_partial_patch
+│   └── status.rs             # GitFile + parse_status/parse_commit_name_status
+├── infra/              # External process / OS boundary
+│   ├── git/
+│   │   ├── mod.rs       # run_git, run_git_with_stdin, get_repo_root, resolve_commit
+│   │   ├── diff.rs        # get_raw_diff/get_display_diff, bat/delta/difftastic invocation
+│   │   ├── apply.rs        # stage_file/unstage_file/stage_lines/unstage_lines
+│   │   └── status.rs        # get_status/get_commit_files
+│   └── (clipboard.rs and config.rs stay at src/ top level — thin enough that
+│         moving them here wasn't judged worth it)
+├── components/          # UI logic/state shared across more than one view
+│   ├── cursor.rs          # Shared viewport-follow math (not the cursor state itself —
+│   │                        #   each view owns its own row-space cursor)
+│   ├── highlight.rs         # Search-match highlighting, used by both tree and diff views
+│   ├── search.rs             # next_match_from/prev_match_from (pure match lookup)
+│   └── tree_row.rs            # Renders one tree row (file or directory)
+├── views/                # Per-screen state + key handler + render, as `impl App` blocks
+│   │                      #   plus a free `render()` function per module
+│   ├── mod.rs              # Top-level layout split + render() dispatch
+│   ├── tree/mod.rs           # Tree pane: handle_tree_key + render
+│   ├── diff/
+│   │   ├── mod.rs              # Diff pane: handle_diff_key + render; owns the loaded
+│   │   │                        #   document (raw_diff/file_diff/line_infos) that
+│   │   │                        #   inline_select.rs also reads
+│   │   └── inline_select.rs      # Line-select handler — a child module of diff/, not an
+│   │                              #   independent view, so it can read diff/mod.rs's
+│   │                              #   private document fields directly
+│   └── statusbar/mod.rs      # Status bar: help-text builders + render
+├── clipboard.rs         # OS clipboard (pbcopy/xclip/etc.)
+└── config.rs             # config.toml parsing
+```
+
+Module boundaries are enforced by Rust's own visibility rules, not just convention:
+`views/` is a sibling of `app/`, so anything it needs from `App` (fields or methods)
+must be `pub` or `pub(crate)` — see the many `pub(crate)` markers in `app/mod.rs` on
+methods that exist mainly for a specific view to call.
+
 ### Data Flow
 
 1. CLI: `diffview [--tool TOOL] [REV]` (`REV` omitted or all-zero OID = working tree target, other `REV` = commit target)
@@ -34,19 +87,24 @@ Rust TUI application for interacting with git diffs. Uses ratatui + crossterm fo
 5. Selecting a file loads diff:
    - Working tree target: `git diff` / `git diff --cached`
    - Commit target: `git show --format= --patch <rev> -- <path>`
-6. Line-level staging builds partial patches and applies via `git apply --cached` on stdin (working tree target only)
+6. Full-file view resolves which git object to show via `domain/content.rs`'s pure policy function, then reads it through `infra/git/diff.rs` — policy and I/O are deliberately separate calls (`domain/` never calls into `infra/`)
+7. Line-level staging builds partial patches (`domain/patch.rs`) and applies them via `git apply --cached` on stdin (`infra/git/apply.rs`, working tree target only)
 
 ### Key Types & Their Roles
 
-- **`App`** (`app.rs`): Central state. Owns both `TreeSection`s, diff state, focus state, review target (`commit_revision`), and all key handlers. The `run()` method is the event loop.
+- **`App`** (`app/mod.rs`): Central state. Owns `tree: TreeViewState`, `diff: DiffViewState`, focus state, review target (`commit_revision`), and the event loop (`run()`/`handle_key()`). Per-view key handlers and render functions live in `views/`, as additional `impl App` blocks and free functions — not on `App` itself.
+- **`TreeViewState`** (`app/mod.rs`): Wraps the `unstaged`/`staged` `TreeSection`s. The Commit target still reuses `unstaged` for its "Files" section rather than having its own field — see `TreeViewState`'s doc comment for the not-yet-done follow-up.
+- **`DiffViewState`** (`app/mod.rs`): The loaded diff document (`raw_diff`/`file_diff`/`line_infos`), the three cursor spaces that read it (`patch_cursor`/`diff_cursor`/`full_file_cursor` — distinct row spaces, see each field's doc comment), and the diff/scroll caches. `views/diff/inline_select.rs` reads this directly as a child module of `views/diff/`.
 - **`TreeSection`**: Manages `all_nodes: Vec<TreeNode>` + `visible: Vec<usize>` (indices into all_nodes). Folding works by filtering visible indices based on ancestor expansion state.
-- **`Focus`** enum: `Unstaged | Staged | DiffView | InlineSelect` — determines which key handler runs
-- **`TreePane`** enum: `Unstaged | Staged` — identifies which tree section, used for diff origin tracking
-- **`FileDiff` / `Hunk` / `DiffLine`** (`domain/diff.rs`): Parsed diff structure used for line-level operations
+- **`Focus`** enum: `Unstaged | Staged | DiffView | InlineSelect` — determines which key handler runs.
+- **`ActiveView`** (`app/focus.rs`): `Workspace | Diff` — a coarser grouping derived from `Focus` (`App::active_view()`), used for the top-level render split. `InlineSelect` maps to `Diff`: it's a subview of the Diff screen, not an independent active view.
+- **`TreePane`** enum: `Unstaged | Staged` — identifies which tree section, used for diff origin tracking.
+- **`ReviewTarget`** (`domain/review_target.rs`): `WorkingTree | Commit(String)`. `App::target()` derives it from `commit_revision`; `App::is_commit()` is the common shorthand.
+- **`FileDiff` / `Hunk` / `DiffLine`** (`domain/diff.rs`): Parsed diff structure used for line-level operations.
 
 ### Layout
 
-The UI splits into: left tree pane (1/4 width) + right diff pane (3/4 width) + bottom status bar (1 line). Rendering is in `ui/mod.rs::render()`.
+The UI splits into: left tree pane (1/4 width) + right diff pane (3/4 width) + bottom status bar (1 line). Rendering is in `views/mod.rs::render()`, which dispatches to `views::tree::render`, `views::diff::render`, and `views::statusbar::render`.
 
 - Working tree target: left tree pane is vertically split into unstaged/staged sections
 - Commit target: left tree pane is a single file tree section (`Files`)
@@ -66,13 +124,13 @@ The trickiest part of the codebase. Two distinct patch builders:
 
 ### Tree Construction
 
-`build_section()` is a free function (not a method) due to borrow checker constraints. Directories use trailing `/` as BTreeMap keys to sort before their children. Expansion state is preserved across refreshes via `prev_expanded` snapshot.
+`build_section()` (in `app/mod.rs`) is a free function (not a method) due to borrow checker constraints. Directories use trailing `/` as BTreeMap keys to sort before their children. Expansion state is preserved across refreshes via `prev_expanded` snapshot.
 
 ## Conventions
 
 - Commits follow Conventional Commits: `feat: ...`, `feat(scope): ...`, `docs: ...`, `fix: ...`
-- Unit tests live alongside implementation in `#[cfg(test)] mod tests`. When changing `src/domain/*` or `src/infra/*`, add or update tests.
-- Responsibilities are separated: pure git/domain logic in `src/domain/`, external process/OS boundaries in `src/infra/`, UI rendering in `src/ui/`, orchestration in `src/app.rs`.
+- Unit tests live alongside implementation in `#[cfg(test)] mod tests`. When changing `src/domain/*` or `src/infra/*`, add or update tests there; when changing a view's handler or render logic, add tests in `app/mod.rs`'s test module (most view-level tests still live there, exercised through `App`'s public/`pub(crate)` methods) or the relevant `views/*` file.
+- Responsibilities are separated: pure logic in `src/domain/` (no I/O), external process/OS boundaries in `src/infra/`, per-screen state+handler+render in `src/views/`, UI logic shared across views in `src/components/`, orchestration (event loop, cross-view state) in `src/app/`.
 - When a change affects build steps, CLI options, or internal structure (types, modules, data flow), ask the user whether this file (`AGENTS.md` / `CLAUDE.md`) needs to be updated.
 - **REQUIRED**: When adding or removing any screen, pane, focus state, key binding, or feature, update `docs/reference.md` in the same PR/commit. This document is the shared vocabulary between users and AI agents — keeping it accurate is mandatory.
 
