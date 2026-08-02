@@ -4256,6 +4256,30 @@ mod tests {
     }
 
     #[test]
+    fn tree_title_shows_files_in_commit_mode_and_pane_label_in_working_tree_mode() {
+        let mut app = make_test_app();
+        assert_eq!(app.tree_title(TreePane::Unstaged), "Unstaged");
+        assert_eq!(app.tree_title(TreePane::Staged), "Staged");
+
+        app.commit_revision = Some("abc1234567890".to_string());
+        assert_eq!(app.tree_title(TreePane::Unstaged), "Files");
+        assert_eq!(app.tree_title(TreePane::Staged), "Files");
+    }
+
+    #[test]
+    fn diff_origin_label_uses_pane_label_in_working_tree_mode_and_commit_label_in_commit_mode() {
+        let mut app = make_test_app();
+        assert_eq!(app.diff_origin_label(TreePane::Unstaged), "unstaged");
+        assert_eq!(app.diff_origin_label(TreePane::Staged), "staged");
+
+        app.commit_revision = Some("abc1234567890".to_string());
+        // Both panes resolve to the same commit label in commit mode, since Commit Files
+        // is a single logical section rather than a real Staged pane (see refresh_trees).
+        assert_eq!(app.diff_origin_label(TreePane::Unstaged), "commit abc12345");
+        assert_eq!(app.diff_origin_label(TreePane::Staged), "commit abc12345");
+    }
+
+    #[test]
     fn begin_search_starts_with_empty_query() {
         let mut app = make_test_app();
         app.search_state = Some(SearchState {
@@ -5565,6 +5589,66 @@ mod tests {
 
         assert_eq!(app.focus, Focus::InlineSelect);
         assert_eq!(app.diff_cursor, 2);
+    }
+
+    #[test]
+    fn patch_cursor_v_is_blocked_in_commit_mode() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Raw;
+        app.commit_revision = Some("abc1234567890".to_string());
+        app.display_line_count = 20;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n";
+        app.file_diff = parse_diff(raw);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.focus, Focus::DiffView);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Commit diff is read-only")
+        );
+    }
+
+    #[test]
+    fn patch_cursor_v_is_blocked_when_tool_does_not_support_line_ops() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Difftastic;
+        app.display_line_count = 20;
+        let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n";
+        app.file_diff = parse_diff(raw);
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.focus, Focus::DiffView);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("Line selection unavailable with difftastic")
+        );
+    }
+
+    #[test]
+    fn patch_cursor_v_is_blocked_when_there_are_no_hunks_to_select() {
+        let mut app = make_test_app();
+        app.focus = Focus::DiffView;
+        app.diff_view_mode = DiffViewMode::Patch;
+        app.tool = DiffTool::Raw;
+        app.display_line_count = 20;
+        app.file_diff = FileDiff::default();
+
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.focus, Focus::DiffView);
+        assert_eq!(
+            app.error_message.as_deref(),
+            Some("No hunks to select lines from")
+        );
     }
 
     #[test]
