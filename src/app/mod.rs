@@ -674,7 +674,7 @@ pub struct App {
     pub config: Config,
     pub tool: DiffTool,
     pub repo_root: PathBuf,
-    pub commit_revision: Option<String>,
+    pub review_target: ReviewTarget,
     tree_pane_percentage: u16,
     commit_key: KeyBinding,
     commit_command: Vec<String>,
@@ -703,9 +703,9 @@ pub struct App {
 impl App {
     pub fn new(tool_override: Option<String>, revision_override: Option<String>) -> Result<Self> {
         let repo_root = crate::infra::git::get_repo_root()?;
-        let commit_revision = match normalize_revision_override(revision_override) {
-            Some(rev) => Some(crate::infra::git::resolve_commit(&rev, &repo_root)?),
-            None => None,
+        let review_target = match normalize_revision_override(revision_override) {
+            Some(rev) => ReviewTarget::Commit(crate::infra::git::resolve_commit(&rev, &repo_root)?),
+            None => ReviewTarget::WorkingTree,
         };
 
         let config = Config::load().unwrap_or_default();
@@ -730,7 +730,7 @@ impl App {
             config,
             tool,
             repo_root,
-            commit_revision,
+            review_target,
             tree_pane_percentage,
             commit_key,
             commit_command,
@@ -783,14 +783,11 @@ impl App {
     }
 
     pub fn target(&self) -> ReviewTarget {
-        match &self.commit_revision {
-            Some(rev) => ReviewTarget::Commit(rev.clone()),
-            None => ReviewTarget::WorkingTree,
-        }
+        self.review_target.clone()
     }
 
     pub fn is_commit(&self) -> bool {
-        self.target().is_commit()
+        self.review_target.is_commit()
     }
 
     pub fn active_view(&self) -> ActiveView {
@@ -801,8 +798,8 @@ impl App {
     }
 
     pub fn commit_label(&self) -> Option<String> {
-        self.commit_revision
-            .as_ref()
+        self.review_target
+            .commit_revision()
             .map(|rev| format!("commit {}", rev.chars().take(8).collect::<String>()))
     }
 
@@ -945,7 +942,7 @@ impl App {
     // ─── Tree building ───────────────────────────────────────────────────
 
     pub fn refresh_trees(&mut self) -> Result<()> {
-        if let Some(rev) = self.commit_revision.as_deref() {
+        if let Some(rev) = self.review_target.commit_revision() {
             let files = get_commit_files(rev, &self.repo_root)?;
             self.rename_sources = build_rename_sources(&files);
             let commit_files: Vec<(String, char, char)> = files
@@ -1005,7 +1002,7 @@ impl App {
             pane,
             tool: self.tool.clone(),
             pane_width: self.diff.diff_pane_width,
-            commit_revision: self.commit_revision.clone(),
+            commit_revision: self.review_target.commit_revision().map(String::from),
             diff_content,
         }
     }
@@ -1366,7 +1363,7 @@ impl App {
             return cached.file_diff;
         }
 
-        let raw = if let Some(rev) = self.commit_revision.as_deref() {
+        let raw = if let Some(rev) = self.review_target.commit_revision() {
             crate::infra::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
                 .unwrap_or_default()
         } else {
@@ -1499,7 +1496,7 @@ impl App {
                     force_ansi_rendering = preview.uses_ansi;
                     patch_content_offset = preview.content_offset;
                     (preview.content.clone(), preview.content)
-                } else if let Some(rev) = self.commit_revision.as_deref() {
+                } else if let Some(rev) = self.review_target.commit_revision() {
                     let raw =
                         crate::infra::git::diff::get_raw_commit_diff(rev, path, &self.repo_root)
                             .unwrap_or_default();
@@ -2888,7 +2885,7 @@ mod tests {
             config: Config::default(),
             tool: DiffTool::Raw,
             repo_root: PathBuf::new(),
-            commit_revision: None,
+            review_target: ReviewTarget::WorkingTree,
             tree_pane_percentage: 25,
             commit_key: KeyBinding::default_commit(),
             commit_command: vec!["git".to_string(), "commit".to_string(), "-v".to_string()],
@@ -2908,10 +2905,10 @@ mod tests {
         }
     }
 
-    // Post-construction mutation helpers. These wrap the fields Phase 6 of
-    // tmp/refactor-tasks.md relocates (focus/diff_content/commit_revision/tree
-    // sections), so a field-shape change updates one function body instead of every
-    // call site below.
+    // Post-construction mutation helpers. These wrap fields whose shape has changed
+    // (or may change again) across the app.rs split refactor (focus/diff_content/
+    // review_target/tree sections), so a field-shape change updates one function body
+    // instead of every call site below.
     fn enter_unstaged_tree(app: &mut App) {
         app.focus = Focus::Unstaged;
     }
@@ -2937,7 +2934,7 @@ mod tests {
     }
 
     fn set_commit(app: &mut App, revision: &str) {
-        app.commit_revision = Some(revision.to_string());
+        app.review_target = ReviewTarget::Commit(revision.to_string());
     }
 
     fn seed_unstaged(app: &mut App, files: &[(String, char, char)]) {
