@@ -24,7 +24,7 @@ Usage: perf/scripts/run_measurements.sh [options]
 Options:
   --bin PATH           diffview binary path (default: ./target/release/diffview)
   --tool TOOL          diff tool to benchmark (default: raw)
-  --commit-rev REV     revision for commit-mode benchmarks
+  --commit-rev REV     revision for Commit-target benchmarks
   --runs N             hyperfine runs (default: 20)
   --warmup N           hyperfine warmup runs (default: 3)
   --moves N            move count for burst benchmark (default: 200)
