@@ -4,7 +4,6 @@ use std::process::{Command, Stdio};
 
 pub mod apply;
 pub mod diff;
-pub mod status;
 
 pub fn run_git(args: &[&str], cwd: &Path) -> Result<String> {
     let output = Command::new("git")

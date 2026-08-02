@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 
 use crate::clipboard;
 use crate::config::Config;
+use crate::domain::status::GitFile;
 use crate::git::diff::{parse_diff, DiffLine, FileDiff};
-use crate::git::status::{get_commit_files, get_status, GitFile};
+use crate::infra::git::status::{get_commit_files, get_status};
 
 // ─── Focus ──────────────────────────────────────────────────────────────────
 

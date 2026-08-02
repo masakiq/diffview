@@ -1,7 +1,9 @@
 mod app;
 mod clipboard;
 mod config;
+mod domain;
 mod git;
+mod infra;
 mod ui;
 
 use anyhow::Result;
