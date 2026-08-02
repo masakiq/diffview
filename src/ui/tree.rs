@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, TreePane};
-use crate::ui::highlight::highlight_line;
+use crate::components::highlight::highlight_line;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect, pane: TreePane) {
     let focused = app.is_tree_focused(pane);

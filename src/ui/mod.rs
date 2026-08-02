@@ -1,5 +1,4 @@
 pub mod diff;
-pub mod highlight;
 pub mod statusbar;
 pub mod tree;
 

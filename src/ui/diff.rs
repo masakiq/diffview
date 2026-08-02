@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, DiffContent, DiffTool, Focus, FullFileSource};
-use crate::ui::highlight::{highlight_full_file_text, highlight_text, SEARCH_HIGHLIGHT_BG};
+use crate::components::highlight::{highlight_full_file_text, highlight_text, SEARCH_HIGHLIGHT_BG};
 
 /// Background tint for full-file view's added/removed line highlight, matching delta's own
 /// default `plus-color`/`minus-color` so patch view (under `--tool delta`) and full-file view

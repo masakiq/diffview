@@ -2025,7 +2025,7 @@ impl App {
                     .flat_map(|&pane| {
                         self.tree(pane).all_nodes.iter().enumerate().filter_map(
                             move |(node_idx, node)| {
-                                crate::ui::highlight::contains_match(
+                                crate::components::highlight::contains_match(
                                     &node.display_row_text(pane),
                                     query,
                                 )
@@ -2040,7 +2040,7 @@ impl App {
                 .into_iter()
                 .enumerate()
                 .filter_map(|(idx, line)| {
-                    crate::ui::highlight::contains_match(&line, query).then_some(idx)
+                    crate::components::highlight::contains_match(&line, query).then_some(idx)
                 })
                 .collect(),
         }
@@ -2139,7 +2139,7 @@ impl App {
         }
 
         let current = self.current_search_position(scope);
-        if let Some(target) = next_match_from(&matches, current, true) {
+        if let Some(target) = crate::components::search::next_match_from(&matches, current, true) {
             self.apply_search_target(scope, target);
         }
     }
@@ -2167,9 +2167,9 @@ impl App {
 
         let current = self.current_search_position(scope);
         let target = if forward {
-            next_match_from(&matches, current, false)
+            crate::components::search::next_match_from(&matches, current, false)
         } else {
-            prev_match_from(&matches, current, false)
+            crate::components::search::prev_match_from(&matches, current, false)
         };
 
         if let Some(target) = target {
@@ -3754,47 +3754,6 @@ fn full_file_diff_highlight_lines(file_diff: &FileDiff, source: FullFileSource) 
     lines
 }
 
-fn next_match_from(matches: &[usize], current: usize, inclusive: bool) -> Option<usize> {
-    if matches.is_empty() {
-        return None;
-    }
-
-    let predicate = |candidate: &usize| {
-        if inclusive {
-            *candidate >= current
-        } else {
-            *candidate > current
-        }
-    };
-
-    matches
-        .iter()
-        .copied()
-        .find(predicate)
-        .or_else(|| matches.first().copied())
-}
-
-fn prev_match_from(matches: &[usize], current: usize, inclusive: bool) -> Option<usize> {
-    if matches.is_empty() {
-        return None;
-    }
-
-    let predicate = |candidate: &usize| {
-        if inclusive {
-            *candidate <= current
-        } else {
-            *candidate < current
-        }
-    };
-
-    matches
-        .iter()
-        .copied()
-        .rev()
-        .find(predicate)
-        .or_else(|| matches.last().copied())
-}
-
 fn suspend_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     terminal.show_cursor()?;
     disable_raw_mode()?;
@@ -3828,24 +3787,6 @@ mod tests {
             Some("deadbeef".to_string())
         );
         assert_eq!(normalize_revision_override(None), None);
-    }
-
-    #[test]
-    fn next_match_wraps_forward() {
-        let matches = vec![2, 5, 9];
-
-        assert_eq!(next_match_from(&matches, 2, false), Some(5));
-        assert_eq!(next_match_from(&matches, 9, false), Some(2));
-        assert_eq!(next_match_from(&matches, 5, true), Some(5));
-    }
-
-    #[test]
-    fn prev_match_wraps_backward() {
-        let matches = vec![2, 5, 9];
-
-        assert_eq!(prev_match_from(&matches, 5, false), Some(2));
-        assert_eq!(prev_match_from(&matches, 2, false), Some(9));
-        assert_eq!(prev_match_from(&matches, 5, true), Some(5));
     }
 
     #[test]
@@ -4791,7 +4732,7 @@ mod tests {
                 Span::styled(
                     "needle",
                     ratatui::style::Style::default()
-                        .bg(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+                        .bg(crate::components::highlight::SEARCH_HIGHLIGHT_BG)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 Span::raw(" in it"),
@@ -4818,7 +4759,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             match_span.style.bg,
-            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+            Some(crate::components::highlight::SEARCH_HIGHLIGHT_BG)
         );
 
         let non_match_span = cursor_line
@@ -4851,7 +4792,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             match_span.style.bg,
-            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+            Some(crate::components::highlight::SEARCH_HIGHLIGHT_BG)
         );
 
         let non_match_span = cursor_line
@@ -4883,7 +4824,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             match_span.style.bg,
-            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+            Some(crate::components::highlight::SEARCH_HIGHLIGHT_BG)
         );
 
         // The added/removed tint color itself is private to `ui::diff` — confirming it's
@@ -4897,7 +4838,7 @@ mod tests {
         assert!(non_match_span.style.bg.is_some());
         assert_ne!(
             non_match_span.style.bg,
-            Some(crate::ui::highlight::SEARCH_HIGHLIGHT_BG)
+            Some(crate::components::highlight::SEARCH_HIGHLIGHT_BG)
         );
     }
 
