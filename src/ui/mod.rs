@@ -40,7 +40,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let tree_area = horiz[0];
     let diff_area = horiz[1];
 
-    if app.is_commit_mode() {
+    if app.is_commit() {
         tree::render(f, app, tree_area, TreePane::Unstaged);
     } else {
         // Split tree area vertically into unstaged (top) and staged (bottom)

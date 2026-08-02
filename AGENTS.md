@@ -15,8 +15,8 @@ cargo fmt                      # Format
 cargo run -- --tool raw        # Run with raw diff (default)
 cargo run -- --tool delta      # Run with delta renderer
 cargo run -- --tool difftastic # Run with difftastic renderer
-cargo run -- 891c1b8           # Commit mode (read-only)
-cargo run -- 0000000000000000000000000000000000000000 # Working tree mode (special-cased null OID)
+cargo run -- 891c1b8           # Commit target (read-only)
+cargo run -- 0000000000000000000000000000000000000000 # Working tree target (special-cased null OID)
 ```
 
 Requires rustc 1.88+. If compilation fails with syntax errors, run `rustup update stable`.
@@ -27,38 +27,38 @@ Rust TUI application for interacting with git diffs. Uses ratatui + crossterm fo
 
 ### Data Flow
 
-1. CLI: `diffview [--tool TOOL] [REV]` (`REV` omitted or all-zero OID = working tree mode, other `REV` = commit mode)
-2. Working tree mode: `git status --porcelain` → parsed into `Vec<GitFile>` (staged/unstaged char pair per file)
-3. Working tree mode: files split into two `TreeSection`s (unstaged vs staged), each with its own `BTreeMap`-based tree
-4. Commit mode: `git show --format= --name-status --find-renames <rev>` → single file tree section
+1. CLI: `diffview [--tool TOOL] [REV]` (`REV` omitted or all-zero OID = working tree target, other `REV` = commit target)
+2. Working tree target: `git status --porcelain` → parsed into `Vec<GitFile>` (staged/unstaged char pair per file)
+3. Working tree target: files split into two `TreeSection`s (unstaged vs staged), each with its own `BTreeMap`-based tree
+4. Commit target: `git show --format= --name-status --find-renames <rev>` → single file tree section
 5. Selecting a file loads diff:
-   - Working tree mode: `git diff` / `git diff --cached`
-   - Commit mode: `git show --format= --patch <rev> -- <path>`
-6. Line-level staging builds partial patches and applies via `git apply --cached` on stdin (working tree mode only)
+   - Working tree target: `git diff` / `git diff --cached`
+   - Commit target: `git show --format= --patch <rev> -- <path>`
+6. Line-level staging builds partial patches and applies via `git apply --cached` on stdin (working tree target only)
 
 ### Key Types & Their Roles
 
-- **`App`** (`app.rs`): Central state. Owns both `TreeSection`s, diff state, focus state, commit mode (`commit_revision`), and all key handlers. The `run()` method is the event loop.
+- **`App`** (`app.rs`): Central state. Owns both `TreeSection`s, diff state, focus state, review target (`commit_revision`), and all key handlers. The `run()` method is the event loop.
 - **`TreeSection`**: Manages `all_nodes: Vec<TreeNode>` + `visible: Vec<usize>` (indices into all_nodes). Folding works by filtering visible indices based on ancestor expansion state.
 - **`Focus`** enum: `Unstaged | Staged | DiffView | InlineSelect` — determines which key handler runs
 - **`TreePane`** enum: `Unstaged | Staged` — identifies which tree section, used for diff origin tracking
-- **`FileDiff` / `Hunk` / `DiffLine`** (`git/diff.rs`): Parsed diff structure used for line-level operations
+- **`FileDiff` / `Hunk` / `DiffLine`** (`domain/diff.rs`): Parsed diff structure used for line-level operations
 
 ### Layout
 
 The UI splits into: left tree pane (1/4 width) + right diff pane (3/4 width) + bottom status bar (1 line). Rendering is in `ui/mod.rs::render()`.
 
-- Working tree mode: left tree pane is vertically split into unstaged/staged sections
-- Commit mode: left tree pane is a single file tree section (`Files`)
+- Working tree target: left tree pane is vertically split into unstaged/staged sections
+- Commit target: left tree pane is a single file tree section (`Files`)
 
 ### Interaction Notes
 
-- Working tree mode tree operations use `u` for stage/unstage on files and directories
+- Working tree target tree operations use `u` for stage/unstage on files and directories
 - InlineSelect uses `u` to apply the selected lines
-- Full-file view (`f`/`F`, still `Focus::DiffView`) always shows a line cursor over real content; `v` starts/cancels a line range and `y` copies it — read-only, so it works in Commit Mode too, unlike InlineSelect
-- Commit mode keeps `Enter` as an open shortcut in the tree, equivalent to `l`
+- Full-file view (`f`/`F`, still `Focus::DiffView`) always shows a line cursor over real content; `v` starts/cancels a line range and `y` copies it — read-only, so it works under the Commit target too, unlike InlineSelect
+- The Commit target keeps `Enter` as an open shortcut in the tree, equivalent to `l`
 
-### Partial Patch System (`git/apply.rs`)
+### Partial Patch System (`domain/patch.rs`)
 
 The trickiest part of the codebase. Two distinct patch builders:
 - **`build_partial_patch`** (staging): Selected `+` kept, unselected `+` omitted, selected `-` kept, unselected `-` become context
@@ -71,8 +71,8 @@ The trickiest part of the codebase. Two distinct patch builders:
 ## Conventions
 
 - Commits follow Conventional Commits: `feat: ...`, `feat(scope): ...`, `docs: ...`, `fix: ...`
-- Unit tests live alongside implementation in `#[cfg(test)] mod tests`. When changing `src/git/*`, add or update tests.
-- Responsibilities are separated: Git/domain logic in `src/git/`, UI rendering in `src/ui/`, orchestration in `src/app.rs`.
+- Unit tests live alongside implementation in `#[cfg(test)] mod tests`. When changing `src/domain/*` or `src/infra/*`, add or update tests.
+- Responsibilities are separated: pure git/domain logic in `src/domain/`, external process/OS boundaries in `src/infra/`, UI rendering in `src/ui/`, orchestration in `src/app.rs`.
 - When a change affects build steps, CLI options, or internal structure (types, modules, data flow), ask the user whether this file (`AGENTS.md` / `CLAUDE.md`) needs to be updated.
 - **REQUIRED**: When adding or removing any screen, pane, focus state, key binding, or feature, update `docs/reference.md` in the same PR/commit. This document is the shared vocabulary between users and AI agents — keeping it accurate is mandatory.
 
@@ -85,4 +85,4 @@ The trickiest part of the codebase. Two distinct patch builders:
 - `raw`: Full functionality (file/hunk/line staging)
 - `delta`: Full functionality, pipes through `delta` binary for display, re-renders on terminal resize
 - `difftastic`: File-level staging only — AST-based diffs have no parseable hunk structure, so `supports_line_ops()` returns false
-- Commit mode (`diffview <REV>`): read-only for all tools (no stage/unstage, no line apply). The all-zero object ID is a special case and opens working tree mode instead.
+- The Commit target (`diffview <REV>`): read-only for all tools (no stage/unstage, no line apply). The all-zero object ID is a special case and opens the working tree target instead.

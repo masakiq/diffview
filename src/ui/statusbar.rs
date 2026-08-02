@@ -57,7 +57,7 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
         DiffTool::Difftastic => " tool:difftastic ",
     };
 
-    let ops = if app.is_commit_mode() {
+    let ops = if app.is_commit() {
         match app.focus {
             Focus::Unstaged | Focus::Staged => app.tree_help_text(),
             Focus::DiffView => app.diff_help_text(),
@@ -71,7 +71,7 @@ fn build_normal_statusbar(app: &App) -> Vec<Span<'static>> {
         }
     };
 
-    let status_legend = if app.is_commit_mode() {
+    let status_legend = if app.is_commit() {
         "  M=modified A=added D=deleted R=renamed C=copied"
     } else {
         "  M=modified A=added D=deleted ?=untracked"

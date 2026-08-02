@@ -4,14 +4,14 @@ This document defines the names of screens, panes, and features so that users an
 
 ---
 
-## Modes
+## Review Targets
 
-diffview has two launch modes.
+diffview has two review targets.
 
-| Mode | How to launch | Description |
+| Target | How to launch | Description |
 |------|--------------|-------------|
-| **Working Tree Mode** | `diffview` (no arguments), or `diffview 0000000000000000000000000000000000000000` | Operate on diffs between the working tree and the index. Stage and unstage operations are available. |
-| **Commit Mode** | `diffview <REV>` | Browse the changes of a specified commit. Read-only; staging operations are not available. The all-zero object ID is treated as a special case and falls back to Working Tree Mode. |
+| **Working Tree** | `diffview` (no arguments), or `diffview 0000000000000000000000000000000000000000` | Operate on diffs between the working tree and the index. Stage and unstage operations are available. |
+| **Commit** | `diffview <REV>` | Browse the changes of a specified commit. Read-only; staging operations are not available. The all-zero object ID is treated as a special case and falls back to the Working Tree target. |
 
 ---
 
@@ -41,7 +41,7 @@ diffview has two launch modes.
 | **Tree Pane** | Left side of the screen. The entire area that displays the file tree. Width defaults to 20% and is configurable via `config.toml`. Hidden when focus is DiffView or InlineSelect — the diff is shown full-screen instead. | ○ | ○ |
 | **Unstaged section** | Upper half of the Tree Pane. Shows working tree changes that have not been staged. | ○ | − |
 | **Staged section** | Lower half of the Tree Pane. Shows changes already registered in the index. | ○ | − |
-| **Files section** | The full Tree Pane area (Commit Mode only). Shows the list of files changed in the commit. | − | ○ |
+| **Files section** | The full Tree Pane area (Commit target only). Shows the list of files changed in the commit. | − | ○ |
 | **Diff Pane** | Right side of the screen (default 80%). Shows the patch diff of the selected file in normal operation — except an untracked file (Working Tree / Unstaged only), which has no patch of its own and opens directly in full-file view instead. In DiffView focus, `f` opens the current-side full file and `F` opens the previous-side full file; pressing the same key again returns to patch view (blocked for that untracked-file exception, which has no patch view to return to). Both patch view and full-file view always show a line cursor over real content while DiffView is focused (not over an "unavailable" placeholder such as a binary/unmerged/missing/empty file) — see Patch view cursor / Full-file view rules below. Shown full-screen when focus is DiffView. | ○ | ○ |
 | **Inline Select Pane** | A line-selection screen that uses the same full-screen area as the DiffView focus. Allows staging/unstaging one line at a time. | ○ | − |
 | **Status Bar** | Bottom 1 line of the screen. Displays the current tool name, operation hints, and file status legend. | ○ | ○ |
@@ -50,7 +50,7 @@ diffview has two launch modes.
 
 ## Layout Details
 
-### Working Tree Mode
+### Working Tree
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -68,7 +68,7 @@ diffview has two launch modes.
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Commit Mode
+### Commit
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -86,7 +86,7 @@ diffview has two launch modes.
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Inline Select Pane (Working Tree Mode only)
+### Inline Select Pane (Working Tree target only)
 
 Entered from DiffView by pressing `v`. The Tree Pane is hidden and the diff is shown full-screen.
 
@@ -124,7 +124,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 |-------|------------|--------------|
 | **Unstaged** | Unstaged section | Initial focus on launch (unless Unstaged is empty and Staged has items, in which case Staged is the initial focus). Also entered by pressing `k` past the top of the Staged section. |
 | **Staged** | Staged section | Automatically entered by pressing `j` past the bottom of the Unstaged section. |
-| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; the selected file is shown full-screen). Moving the cursor in the tree updates the preview on the right (patch view for a tracked file, full-file view for an untracked one — see below) but does not change focus. In Commit Mode, `Enter` works the same as `l`. Press `f` in DiffView to toggle the current-side full file, or `F` to toggle the previous-side full file. Both patch view and full-file view always show a line cursor over real content within this same focus (not over an "unavailable" placeholder) — see Patch view cursor / Full-file view rules below. |
+| **DiffView** | Diff Pane (full-screen) | Press `l` to move focus (Tree Pane is hidden; the selected file is shown full-screen). Moving the cursor in the tree updates the preview on the right (patch view for a tracked file, full-file view for an untracked one — see below) but does not change focus. Under the Commit target, `Enter` works the same as `l`. Press `f` in DiffView to toggle the current-side full file, or `F` to toggle the previous-side full file. Both patch view and full-file view always show a line cursor over real content within this same focus (not over an "unavailable" placeholder) — see Patch view cursor / Full-file view rules below. |
 | **InlineSelect** | Inline Select Pane | Press `v` in DiffView. |
 
 ---
@@ -154,7 +154,7 @@ Indicates which part of the screen is the current input target. Key behavior cha
 | Fold directory | `h` / `←` | Folds the parent directory of the current node and moves the cursor to that parent. |
 | Return to tree | `h` / `←` | Returns to the Tree Pane from DiffView or InlineSelect. |
 
-### Staging Operations (Working Tree Mode only)
+### Staging Operations (Working Tree target only)
 
 | Action | Operation | Description |
 |--------|-----------|-------------|
@@ -213,26 +213,26 @@ Full-file view rules:
 - `f` opens the current side.
   - Working Tree / Unstaged: working tree file
   - Working Tree / Staged: index blob
-  - Commit Mode: selected commit blob
+  - Commit target: selected commit blob
   - Exception: an untracked file in Working Tree / Unstaged is already open in full-file view by default (above) and has no patch view to toggle back to — `f` pressed from `FullFile(Current)` is disabled there (a no-op). `f` pressed from `FullFile(Previous)` still works normally, moving back to `FullFile(Current)`.
 - `F` opens the previous side.
   - Working Tree / Unstaged: index blob
   - Working Tree / Staged: `HEAD` blob
-  - Commit Mode: first parent blob
+  - Commit target: first parent blob
 - If the file does not exist on the requested side, an unavailable message is shown.
   - Example: pressing `f` on a deleted file
   - Example: pressing `F` on an added or untracked file
 - Binary files show `Full file view unavailable for binary files`.
 - Unmerged files show `Full file view unavailable for unmerged files`.
-- `v` and `y` are read-only operations, so they work over full-file content in Commit Mode too, not just Working Tree Mode.
+- `v` and `y` are read-only operations, so they work over full-file content under the Commit target too, not just Working Tree.
 
 ### Other
 
 | Action | Key | Description |
 |--------|-----|-------------|
 | Copy file path | `c` | Copies the selected or displayed file path to the clipboard. |
-| Commit | Configurable (default `C`) | Runs the configured external commit command. Available in Working Tree Mode only, when focus is Unstaged, Staged, or DiffView. The key can be changed in `config.toml`. |
-| Refresh | `r` | In Working Tree Mode: re-fetches `git status` and updates the screen. In Commit Mode: rebuilds the commit file list and reloads the current DiffView content. |
+| Commit | Configurable (default `C`) | Runs the configured external commit command. Available in the Working Tree target only, when focus is Unstaged, Staged, or DiffView. The key can be changed in `config.toml`. |
+| Refresh | `r` | Under the Working Tree target: re-fetches `git status` and updates the screen. Under the Commit target: rebuilds the commit file list and reloads the current DiffView content. |
 | Help | `?` | Displays a key binding list in the Status Bar. Available in Unstaged / Staged focus only. |
 | Quit | `q` | Exits the application. |
 

@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use crate::clipboard;
 use crate::config::Config;
 use crate::domain::diff::{parse_diff, DiffLine, FileDiff};
+use crate::domain::review_target::ReviewTarget;
 use crate::domain::status::GitFile;
 use crate::infra::git::status::{get_commit_files, get_status};
 
@@ -718,7 +719,7 @@ impl App {
         app.refresh_trees()?;
 
         // Auto-focus: if unstaged is empty but staged has items, start in staged
-        if !app.is_commit_mode() && app.unstaged.is_empty() && !app.staged.is_empty() {
+        if !app.is_commit() && app.unstaged.is_empty() && !app.staged.is_empty() {
             app.focus = Focus::Staged;
         }
 
@@ -748,8 +749,15 @@ impl App {
         }
     }
 
-    pub fn is_commit_mode(&self) -> bool {
-        self.commit_revision.is_some()
+    pub fn target(&self) -> ReviewTarget {
+        match &self.commit_revision {
+            Some(rev) => ReviewTarget::Commit(rev.clone()),
+            None => ReviewTarget::WorkingTree,
+        }
+    }
+
+    pub fn is_commit(&self) -> bool {
+        self.target().is_commit()
     }
 
     pub fn commit_label(&self) -> Option<String> {
@@ -759,7 +767,7 @@ impl App {
     }
 
     pub fn tree_title(&self, pane: TreePane) -> &'static str {
-        if self.is_commit_mode() {
+        if self.is_commit() {
             "Files"
         } else {
             pane.label()
@@ -796,7 +804,7 @@ impl App {
         let current_scope = self.current_search_scope()?;
         let search = self.search_state.as_ref()?;
 
-        match (current_scope, search.scope, self.is_commit_mode(), pane) {
+        match (current_scope, search.scope, self.is_commit(), pane) {
             (SearchScope::WorkingTree, SearchScope::WorkingTree, false, _) => {
                 Some(search.query.as_str())
             }
@@ -821,7 +829,7 @@ impl App {
     }
 
     pub fn tree_help_text(&self) -> String {
-        if self.is_commit_mode() {
+        if self.is_commit() {
             "[l/Enter]open [h]back [c]copy [/]search [n/N]match [Ctrl-U/D]5-lines [j/k]move [r]refresh [?]help [q]quit".to_string()
         } else {
             format!(
@@ -843,11 +851,11 @@ impl App {
             ops.push_str(" [P]copy-file [v]select [y]copy");
         }
 
-        if !self.is_commit_mode() {
+        if !self.is_commit() {
             ops.push_str(&format!(" [{}]commit", self.commit_key_label()));
         }
         if self.diff_view_mode == DiffViewMode::Patch
-            && !self.is_commit_mode()
+            && !self.is_commit()
             && self.tool.supports_line_ops()
         {
             ops.push_str(" [v]select");
@@ -883,7 +891,7 @@ impl App {
     }
 
     fn can_trigger_commit_action(&self, key: KeyEvent) -> bool {
-        !self.is_commit_mode()
+        !self.is_commit()
             && self.commit_key.matches(key)
             && matches!(
                 self.focus,
@@ -901,7 +909,7 @@ impl App {
     }
 
     pub fn is_tree_focused(&self, pane: TreePane) -> bool {
-        if self.is_commit_mode() && pane == TreePane::Staged {
+        if self.is_commit() && pane == TreePane::Staged {
             return false;
         }
         match pane {
@@ -918,7 +926,7 @@ impl App {
     }
 
     fn focused_pane(&self) -> Option<TreePane> {
-        if self.is_commit_mode() {
+        if self.is_commit() {
             return match self.focus {
                 Focus::Unstaged => Some(TreePane::Unstaged),
                 _ => None,
@@ -934,12 +942,12 @@ impl App {
 
     fn current_search_scope(&self) -> Option<SearchScope> {
         match self.focus {
-            Focus::Unstaged => Some(if self.is_commit_mode() {
+            Focus::Unstaged => Some(if self.is_commit() {
                 SearchScope::CommitTree
             } else {
                 SearchScope::WorkingTree
             }),
-            Focus::Staged if !self.is_commit_mode() => Some(SearchScope::WorkingTree),
+            Focus::Staged if !self.is_commit() => Some(SearchScope::WorkingTree),
             Focus::DiffView => Some(SearchScope::DiffView),
             Focus::InlineSelect => Some(SearchScope::InlineSelect),
             _ => None,
@@ -1306,7 +1314,7 @@ impl App {
             .find(|node| !node.is_dir && node.path == Path::new(path))
             .map(|node| FileSelectionState {
                 status: node.status_for(pane),
-                is_unmerged: !self.is_commit_mode() && node.is_unmerged(),
+                is_unmerged: !self.is_commit() && node.is_unmerged(),
                 is_untracked: node.is_untracked(),
             })
     }
@@ -1434,7 +1442,7 @@ impl App {
             (TreePane::Unstaged, FullFileSource::Current) => Ok(FullFileContentTarget::Worktree),
             (TreePane::Unstaged, FullFileSource::Previous) => Ok(FullFileContentTarget::Revision {
                 // The index already holds a staged rename/copy under its new path (that's
-                // what "staged" means), so unlike the Staged-pane/commit-mode cases below,
+                // what "staged" means), so unlike the Staged-pane/commit-target cases below,
                 // no `rename_sources` lookup is needed here.
                 rev_spec: format!(":{}", path),
                 content_annotation,
@@ -1808,7 +1816,7 @@ impl App {
     }
 
     fn has_untracked_file_in_pane(&self, pane: TreePane, path: &str) -> bool {
-        if self.is_commit_mode() {
+        if self.is_commit() {
             return false;
         }
         self.tree(pane)
@@ -1833,7 +1841,7 @@ impl App {
 
     /// Whether the currently open file is untracked in the Unstaged pane — the only case
     /// `default_view_mode_for` routes into full-file view on its own (Staged never holds
-    /// an untracked node; Commit Mode has none at all, see `has_untracked_file_in_pane`).
+    /// an untracked node; the Commit target has none at all, see `has_untracked_file_in_pane`).
     /// `f` toggles back to `Patch` here, but that's just `get_file_preview`'s bat
     /// rendering again under a different label — the same content full-file view already
     /// shows, minus the range-select cursor — so there is no real patch view to toggle to.
@@ -1891,7 +1899,7 @@ impl App {
         self.refresh_trees()?;
 
         // Keep focus unless the current tree became empty.
-        if self.is_commit_mode() {
+        if self.is_commit() {
             self.focus = match prev_focus {
                 Focus::DiffView | Focus::InlineSelect => Focus::DiffView,
                 _ => Focus::Unstaged,
@@ -2386,7 +2394,7 @@ impl App {
             {
                 self.tree_stage_or_unstage()?;
             }
-            KeyCode::Enter if self.is_commit_mode() => {
+            KeyCode::Enter if self.is_commit() => {
                 self.tree_action_right()?;
             }
             KeyCode::Char('c') => {
@@ -2455,7 +2463,7 @@ impl App {
         if can_move {
             self.tree_mut(pane).cursor += 1;
             true
-        } else if !self.is_commit_mode() && pane == TreePane::Unstaged && !self.staged.is_empty() {
+        } else if !self.is_commit() && pane == TreePane::Unstaged && !self.staged.is_empty() {
             self.focus = Focus::Staged;
             self.staged.cursor = 0;
             true
@@ -2478,7 +2486,7 @@ impl App {
         if can_move {
             self.tree_mut(pane).cursor -= 1;
             true
-        } else if !self.is_commit_mode() && pane == TreePane::Staged && !self.unstaged.is_empty() {
+        } else if !self.is_commit() && pane == TreePane::Staged && !self.unstaged.is_empty() {
             self.focus = Focus::Unstaged;
             self.unstaged.cursor = self.unstaged.visible.len().saturating_sub(1);
             true
@@ -2531,9 +2539,9 @@ impl App {
         self.tree_mut(pane).fold_parent();
     }
 
-    /// Stage or unstage the selected file or directory in working tree mode.
+    /// Stage or unstage the selected file or directory in the working tree target.
     fn tree_stage_or_unstage(&mut self) -> Result<()> {
-        if self.is_commit_mode() {
+        if self.is_commit() {
             return self.tree_action_right();
         }
 
@@ -3147,7 +3155,7 @@ impl App {
                 } else if is_full_file_view {
                     self.error_message =
                         Some("Line selection unavailable in full file view".to_string());
-                } else if self.is_commit_mode() {
+                } else if self.is_commit() {
                     self.error_message = Some("Commit diff is read-only".to_string());
                 } else if self.tool.supports_line_ops() {
                     if self.file_diff.hunks.is_empty() {
@@ -3426,7 +3434,7 @@ impl App {
     }
 
     fn apply_current_line(&mut self) -> Result<()> {
-        if self.is_commit_mode() {
+        if self.is_commit() {
             self.error_message = Some("Commit diff is read-only".to_string());
             return Ok(());
         }
@@ -3855,7 +3863,7 @@ mod tests {
     #[test]
     fn tree_help_keeps_enter_for_commit_mode_open() {
         let mut app = make_test_app();
-        set_commit_mode(&mut app, "deadbeef");
+        set_commit(&mut app, "deadbeef");
 
         assert!(app.tree_help_text().contains("[l/Enter]open"));
     }
@@ -4045,12 +4053,12 @@ mod tests {
     #[test]
     fn commit_mode_added_file_is_not_treated_as_unmerged_in_full_file_logic() {
         let mut app = make_test_app();
-        set_commit_mode(&mut app, "deadbeef");
+        set_commit(&mut app, "deadbeef");
         seed_unstaged(&mut app, &[("added.txt".to_string(), 'A', 'A')]);
 
         let file_state = app
             .file_selection_state("added.txt", TreePane::Unstaged)
-            .expect("commit-mode file state should exist");
+            .expect("commit-target file state should exist");
 
         assert_eq!(file_state.status, 'A');
         assert!(!file_state.is_unmerged);
@@ -4135,7 +4143,7 @@ mod tests {
         app.diff_view_mode = DiffViewMode::FullFile(source);
     }
 
-    fn set_commit_mode(app: &mut App, revision: &str) {
+    fn set_commit(app: &mut App, revision: &str) {
         app.commit_revision = Some(revision.to_string());
     }
 
@@ -4290,7 +4298,7 @@ mod tests {
         assert_eq!(app.tree_title(TreePane::Unstaged), "Unstaged");
         assert_eq!(app.tree_title(TreePane::Staged), "Staged");
 
-        set_commit_mode(&mut app, "abc1234567890");
+        set_commit(&mut app, "abc1234567890");
         assert_eq!(app.tree_title(TreePane::Unstaged), "Files");
         assert_eq!(app.tree_title(TreePane::Staged), "Files");
     }
@@ -4301,8 +4309,8 @@ mod tests {
         assert_eq!(app.diff_origin_label(TreePane::Unstaged), "unstaged");
         assert_eq!(app.diff_origin_label(TreePane::Staged), "staged");
 
-        set_commit_mode(&mut app, "abc1234567890");
-        // Both panes resolve to the same commit label in commit mode, since Commit Files
+        set_commit(&mut app, "abc1234567890");
+        // Both panes resolve to the same commit label under the Commit target, since Commit Files
         // is a single logical section rather than a real Staged pane (see refresh_trees).
         assert_eq!(app.diff_origin_label(TreePane::Unstaged), "commit abc12345");
         assert_eq!(app.diff_origin_label(TreePane::Staged), "commit abc12345");
@@ -4397,7 +4405,7 @@ mod tests {
             })
         );
 
-        set_commit_mode(&mut app, "deadbeef");
+        set_commit(&mut app, "deadbeef");
         assert_eq!(
             app.resolve_full_file_content_target(
                 "gone.txt",
@@ -4467,9 +4475,9 @@ mod tests {
             })
         );
 
-        // Commit mode's Previous reads from the parent commit, which also only has the
+        // The Commit target's Previous reads from the parent commit, which also only has the
         // file under its old path.
-        set_commit_mode(&mut app, "deadbeef");
+        set_commit(&mut app, "deadbeef");
         assert_eq!(
             app.resolve_full_file_content_target(
                 "new.rs",
@@ -5602,7 +5610,7 @@ mod tests {
         enter_diff_view(&mut app);
         set_patch_mode(&mut app);
         app.tool = DiffTool::Raw;
-        set_commit_mode(&mut app, "abc1234567890");
+        set_commit(&mut app, "abc1234567890");
         app.display_line_count = 20;
         let raw = "diff --git a/file.txt b/file.txt\nindex 111..222 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n";
         app.file_diff = parse_diff(raw);

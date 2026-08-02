@@ -26,7 +26,7 @@ cp target/release/diffview ~/.local/bin/
 # Open the git repository in the current directory
 diffview
 
-# Treat the null object ID as working-tree mode
+# Treat the null object ID as the working-tree target
 diffview 0000000000000000000000000000000000000000
 
 # Open a specific commit diff (read-only)
@@ -78,9 +78,9 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 | `n` / `N` | Jump to next / previous match                       |
 | `C`       | Run the commit command (`git commit -v` by default) |
 
-> Commit mode (`diffview <REV>`) is read-only: `Enter` opens diff, no stage/unstage operations.
-> The all-zero object ID (`0000000000000000000000000000000000000000`) is treated as a special case and opens working-tree mode instead.
-> Tree search is case-insensitive. In working-tree mode it scans all files in both `Unstaged` and `Staged`, including collapsed entries.
+> Commit (`diffview <REV>`) is read-only: `Enter` opens diff, no stage/unstage operations.
+> The all-zero object ID (`0000000000000000000000000000000000000000`) is treated as a special case and opens the working-tree target instead.
+> Tree search is case-insensitive. Under the working-tree target it scans all files in both `Unstaged` and `Staged`, including collapsed entries.
 
 ### Diff View (right pane)
 
@@ -115,7 +115,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 > Full-file view always shows a line cursor over real content while Diff View is
 > focused; `j`/`k`, `Ctrl+D`/`Ctrl+U`, and `gg`/`G` move it directly instead of just
 > scrolling. `]` and `[` are unavailable there.
-> `v` and `y` are read-only, so they also work over full-file content in Commit Mode.
+> `v` and `y` are read-only, so they also work over full-file content under the Commit target.
 > `P` is available only in full-file view and copies the raw file contents.
 > Deleted files show the pre-delete contents when full-file view is available.
 
@@ -134,7 +134,7 @@ Then restart `tig`, move the cursor to a commit in `main` view, and press `D`.
 
 > Search is case-insensitive in every pane.
 
-> Line-select mode is unavailable in commit mode.
+> Line-select mode is unavailable under the commit target.
 
 ## File Status Indicators
 
