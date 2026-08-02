@@ -22,6 +22,7 @@ pub use focus::ActiveView;
 
 use crate::clipboard;
 use crate::config::Config;
+use crate::domain::content::{FullFileSource, TreePane};
 use crate::domain::diff::{parse_diff, DiffLine, FileDiff};
 use crate::domain::review_target::ReviewTarget;
 use crate::domain::status::GitFile;
@@ -38,12 +39,8 @@ pub enum Focus {
 }
 
 // ─── TreePane ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TreePane {
-    Unstaged,
-    Staged,
-}
+// (type defined in `domain::content` — see the `use` above; only the impl below,
+// which returns `Focus`, an app-owned type, stays here)
 
 impl TreePane {
     pub fn label(self) -> &'static str {
@@ -102,12 +99,8 @@ pub enum DiffContent {
     FullFile(FullFileSource),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FullFileSource {
-    Current,
-    Previous,
-}
-
+// (type defined in `domain::content` — see the `use` above; only the impl below,
+// with UI-facing label/message strings, stays here)
 impl FullFileSource {
     fn title_label(self) -> &'static str {
         match self {
@@ -1737,7 +1730,16 @@ impl App {
         if self.is_commit() {
             return false;
         }
-        crate::domain::content::has_untracked_file(&self.tree(pane).all_nodes, path)
+        let nodes =
+            self.tree(pane)
+                .all_nodes
+                .iter()
+                .map(|n| crate::domain::content::NodeTrackingState {
+                    path: &n.path,
+                    is_dir: n.is_dir,
+                    is_untracked: n.is_untracked(),
+                });
+        crate::domain::content::has_untracked_file(nodes, path)
     }
 
     /// Which diff content a file selection should open in. An untracked file has no hunks

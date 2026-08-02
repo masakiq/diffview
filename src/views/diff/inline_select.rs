@@ -2,7 +2,8 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 
-use crate::app::{App, Focus, TreePane};
+use crate::app::{App, Focus};
+use crate::domain::content::TreePane;
 
 impl App {
     pub(crate) fn handle_inline_select_key(&mut self, key: KeyEvent) -> Result<()> {

@@ -6,7 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DiffContent, DiffTool, Focus, FullFileSource};
+use crate::app::{App, DiffContent, DiffTool, Focus};
+use crate::domain::content::FullFileSource;
 
 impl App {
     pub fn tree_help_text(&self) -> String {

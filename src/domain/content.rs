@@ -1,8 +1,36 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::app::{FullFileSource, TreeNode, TreePane};
 use crate::domain::review_target::ReviewTarget;
+
+/// Which side of a diff a full-file view request is for. Data-only here; the
+/// UI-facing methods (`title_label`/`status_message`/`missing_message` callers'
+/// formatting, etc.) stay on the `impl` in `app/mod.rs` — inherent impls don't need to
+/// live in the same module as the type, just the same crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FullFileSource {
+    Current,
+    Previous,
+}
+
+/// Which working-tree tree section a file belongs to. Data-only here for the same
+/// reason as `FullFileSource` — `impl TreePane` (which returns `app::Focus`) stays in
+/// `app/mod.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TreePane {
+    Unstaged,
+    Staged,
+}
+
+/// The minimal per-node fact `has_untracked_file` needs. Deliberately not `TreeNode`
+/// (a UI/render concept — depth, expansion, display name — owned by `app`), so this
+/// module has no dependency on it; callers convert their `TreeNode`s at the call site.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeTrackingState<'a> {
+    pub path: &'a Path,
+    pub is_dir: bool,
+    pub is_untracked: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentAnnotation {
@@ -117,10 +145,13 @@ pub fn resolve_full_file_content_target(
 /// circuit (an untracked node never appears in that tree in the first place, but the
 /// check is cheap insurance and keeps the "no untracked files under Commit" invariant
 /// visible at the call site rather than buried in here).
-pub fn has_untracked_file(nodes: &[TreeNode], path: &str) -> bool {
+pub fn has_untracked_file<'a>(
+    nodes: impl IntoIterator<Item = NodeTrackingState<'a>>,
+    path: &str,
+) -> bool {
     nodes
-        .iter()
-        .any(|n| !n.is_dir && n.path == Path::new(path) && n.is_untracked())
+        .into_iter()
+        .any(|n| !n.is_dir && n.path == Path::new(path) && n.is_untracked)
 }
 
 #[cfg(test)]
@@ -338,41 +369,27 @@ mod tests {
 
     #[test]
     fn has_untracked_file_matches_only_untracked_non_directory_nodes_at_the_given_path() {
-        use std::path::PathBuf;
-
-        let nodes = vec![
-            TreeNode {
-                path: PathBuf::from("a.txt"),
-                name: "a.txt".to_string(),
-                depth: 0,
+        let nodes = [
+            NodeTrackingState {
+                path: Path::new("a.txt"),
                 is_dir: false,
-                expanded: false,
-                staged: '?',
-                unstaged: '?',
+                is_untracked: true,
             },
-            TreeNode {
-                path: PathBuf::from("dir"),
-                name: "dir".to_string(),
-                depth: 0,
+            NodeTrackingState {
+                path: Path::new("dir"),
                 is_dir: true,
-                expanded: false,
-                staged: '?',
-                unstaged: '?',
+                is_untracked: true,
             },
-            TreeNode {
-                path: PathBuf::from("tracked.txt"),
-                name: "tracked.txt".to_string(),
-                depth: 0,
+            NodeTrackingState {
+                path: Path::new("tracked.txt"),
                 is_dir: false,
-                expanded: false,
-                staged: ' ',
-                unstaged: 'M',
+                is_untracked: false,
             },
         ];
 
-        assert!(has_untracked_file(&nodes, "a.txt"));
-        assert!(!has_untracked_file(&nodes, "dir"));
-        assert!(!has_untracked_file(&nodes, "tracked.txt"));
-        assert!(!has_untracked_file(&nodes, "missing.txt"));
+        assert!(has_untracked_file(nodes, "a.txt"));
+        assert!(!has_untracked_file(nodes, "dir"));
+        assert!(!has_untracked_file(nodes, "tracked.txt"));
+        assert!(!has_untracked_file(nodes, "missing.txt"));
     }
 }

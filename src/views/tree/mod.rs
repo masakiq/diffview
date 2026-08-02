@@ -8,8 +8,9 @@ use ratatui::{
 };
 use std::path::Path;
 
-use crate::app::{App, ExternalAction, Focus, TreePane, TREE_FAST_MOVE_LINES};
+use crate::app::{App, ExternalAction, Focus, TREE_FAST_MOVE_LINES};
 use crate::components::tree_row::render_row;
+use crate::domain::content::TreePane;
 
 impl App {
     pub(crate) fn handle_tree_key(&mut self, key: KeyEvent) -> Result<()> {

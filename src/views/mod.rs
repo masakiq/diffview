@@ -7,7 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{ActiveView, App, TreePane};
+use crate::app::{ActiveView, App};
+use crate::domain::content::TreePane;
 
 pub fn render(f: &mut Frame, app: &App) {
     let size = f.area();

@@ -4,8 +4,9 @@ use ratatui::{
     widgets::ListItem,
 };
 
-use crate::app::{TreeNode, TreePane};
+use crate::app::TreeNode;
 use crate::components::highlight::highlight_line;
+use crate::domain::content::TreePane;
 
 /// Renders one tree row (file or directory), shared by the Unstaged/Staged/Files
 /// sections — the only differences between them are the node's own status chars and

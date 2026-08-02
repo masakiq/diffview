@@ -8,9 +8,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{is_plain_g, App, DiffContent, DiffTool, ExternalAction, Focus, FullFileSource};
+use crate::app::{is_plain_g, App, DiffContent, DiffTool, ExternalAction, Focus};
 use crate::clipboard;
 use crate::components::highlight::{highlight_full_file_text, highlight_text, SEARCH_HIGHLIGHT_BG};
+use crate::domain::content::FullFileSource;
 
 mod inline_select;
 

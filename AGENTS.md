@@ -39,7 +39,10 @@ src/
 ├── domain/            # Pure logic — no process spawning, no file I/O
 │   ├── review_target.rs  # ReviewTarget (WorkingTree | Commit)
 │   ├── content.rs        # Full-file content resolution policy (which git object
-│   │                      #   to read, given target/pane/side/file-state)
+│   │                      #   to read, given target/pane/side/file-state); also
+│   │                      #   defines FullFileSource and TreePane (data-only — their
+│   │                      #   `impl` blocks with app-specific behavior stay in
+│   │                      #   app/mod.rs, which imports the types from here)
 │   ├── diff.rs             # FileDiff/Hunk/DiffLine + parse_diff and friends
 │   ├── patch.rs             # build_hunk_patch/build_partial_patch/build_reverse_partial_patch
 │   └── status.rs             # GitFile + parse_status/parse_commit_name_status
@@ -98,7 +101,7 @@ methods that exist mainly for a specific view to call.
 - **`TreeSection`**: Manages `all_nodes: Vec<TreeNode>` + `visible: Vec<usize>` (indices into all_nodes). Folding works by filtering visible indices based on ancestor expansion state.
 - **`Focus`** enum: `Unstaged | Staged | DiffView | InlineSelect` — determines which key handler runs.
 - **`ActiveView`** (`app/focus.rs`): `Workspace | Diff` — a coarser grouping derived from `Focus` (`App::active_view()`), used for the top-level render split. `InlineSelect` maps to `Diff`: it's a subview of the Diff screen, not an independent active view.
-- **`TreePane`** enum: `Unstaged | Staged` — identifies which tree section, used for diff origin tracking.
+- **`TreePane`** (`domain/content.rs`): `Unstaged | Staged` — identifies which tree section, used for diff origin tracking. Its `impl` (label/`to_focus`/`is_staged`) stays in `app/mod.rs`, since `to_focus` returns `Focus`, an app-owned type.
 - **`ReviewTarget`** (`domain/review_target.rs`): `WorkingTree | Commit(String)`. `App::target()` derives it from `commit_revision`; `App::is_commit()` is the common shorthand.
 - **`FileDiff` / `Hunk` / `DiffLine`** (`domain/diff.rs`): Parsed diff structure used for line-level operations.
 
