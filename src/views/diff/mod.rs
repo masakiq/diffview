@@ -427,6 +427,13 @@ impl App {
                     self.error_message = Some("No content to copy".to_string());
                 }
             }
+            KeyCode::Char('Y') if is_full_file_view => {
+                if self.full_file_cursor_active() {
+                    self.copy_full_file_selection_with_location();
+                } else {
+                    self.error_message = Some("No content to copy".to_string());
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -547,6 +554,40 @@ impl App {
         match clipboard::copy_text(&text) {
             Ok(_) => {
                 self.status_message = Some(format!("Copied {} line(s)", hi - lo + 1));
+            }
+            Err(e) => self.error_message = Some(format!("Clipboard error: {}", e)),
+        }
+    }
+
+    /// `full_file_selection_text()` prefixed with `path:line` (or `path:lo-hi` for a
+    /// multi-line range), 1-indexed to match how editors/GitHub display line numbers —
+    /// `full_file_cursor`/`full_file_anchor` are 0-indexed positions into `raw_diff`.
+    /// `None` when no file is open, matching `full_file_clipboard_text`'s own guard.
+    pub(crate) fn full_file_selection_location_text(&self) -> Option<String> {
+        let path = self.diff.current_file.as_deref()?;
+        let (lo, hi) = self.full_file_selection_range();
+        let location = if lo == hi {
+            format!("{}:{}", path, lo + 1)
+        } else {
+            format!("{}:{}-{}", path, lo + 1, hi + 1)
+        };
+        Some(format!(
+            "{}\n\n{}",
+            location,
+            self.full_file_selection_text()
+        ))
+    }
+
+    fn copy_full_file_selection_with_location(&mut self) {
+        let (lo, hi) = self.full_file_selection_range();
+        let Some(text) = self.full_file_selection_location_text() else {
+            self.error_message = Some("No file selected".to_string());
+            return;
+        };
+
+        match clipboard::copy_text(&text) {
+            Ok(_) => {
+                self.status_message = Some(format!("Copied {} line(s) with location", hi - lo + 1));
             }
             Err(e) => self.error_message = Some(format!("Clipboard error: {}", e)),
         }

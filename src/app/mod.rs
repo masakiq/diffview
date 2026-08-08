@@ -3247,6 +3247,7 @@ mod tests {
         assert!(app.diff_help_text().contains("[P]copy-file"));
         assert!(app.diff_help_text().contains("[v]select"));
         assert!(app.diff_help_text().contains("[y]copy"));
+        assert!(app.diff_help_text().contains("[Y]copy+loc"));
 
         set_full_file_content(&mut app, FullFileSource::Previous);
         assert!(app.diff_help_text().contains("[f]file"));
@@ -4932,6 +4933,11 @@ mod tests {
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.error_message.as_deref(), Some("No content to copy"));
+
+        app.error_message = None;
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.error_message.as_deref(), Some("No content to copy"));
     }
 
     #[test]
@@ -4952,6 +4958,11 @@ mod tests {
 
         app.error_message = None;
         app.handle_diff_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.error_message.as_deref(), Some("No content to copy"));
+
+        app.error_message = None;
+        app.handle_diff_key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.error_message.as_deref(), Some("No content to copy"));
     }
@@ -5245,6 +5256,33 @@ mod tests {
         app.diff.full_file_cursor = 1;
         app.diff.full_file_anchor = None;
         assert_eq!(app.full_file_selection_text(), "\n");
+    }
+
+    #[test]
+    fn full_file_selection_location_text_prefixes_path_and_1_indexed_line_range() {
+        let mut app = make_test_app();
+        app.diff.raw_diff = "line0\nline1\nline2\nline3\nline4".to_string();
+        app.diff.current_file = Some("src/lib.rs".to_string());
+
+        // No anchor: a single 1-indexed line number, no range.
+        app.diff.full_file_cursor = 2;
+        app.diff.full_file_anchor = None;
+        assert_eq!(
+            app.full_file_selection_location_text().as_deref(),
+            Some("src/lib.rs:3\n\nline2\n")
+        );
+
+        // A range: lo-hi, 1-indexed, regardless of anchor direction.
+        app.diff.full_file_cursor = 3;
+        app.diff.full_file_anchor = Some(1);
+        assert_eq!(
+            app.full_file_selection_location_text().as_deref(),
+            Some("src/lib.rs:2-4\n\nline1\nline2\nline3\n")
+        );
+
+        // No file open: nothing to prefix the copy with.
+        app.diff.current_file = None;
+        assert_eq!(app.full_file_selection_location_text(), None);
     }
 
     #[test]

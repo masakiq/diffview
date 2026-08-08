@@ -131,6 +131,7 @@ no patch of its own).
 | `P`       | Copy the whole opened file's contents                   |
 | `v`       | Start / cancel a line range at the cursor               |
 | `y`       | Copy the selected range (or just the cursor's line)     |
+| `Y`       | Copy the selected range with a `path:line` header (`path:lo-hi` for a range) |
 | `C`       | Run the commit command (`git commit -v` by default) — Working Tree target only |
 
 > For an untracked file (Working Tree / Unstaged only), full-file view opens directly —
@@ -139,7 +140,7 @@ no patch of its own).
 > unavailable (untracked content never existed before). Deleted files show the pre-delete
 > contents on the previous side. Binary/unmerged files show an unavailable message instead
 > of content on either side.
-> `v` and `y` are read-only, so they also work over full-file content under the Commit target.
+> `v`, `y`, and `Y` are read-only, so they also work over full-file content under the Commit target.
 
 ### Inline Select (started with `v`)
 

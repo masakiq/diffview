@@ -30,7 +30,7 @@ impl App {
             ops.push_str(" [[]/[]]hunk");
         }
         if self.diff.diff_content.is_full_file() {
-            ops.push_str(" [P]copy-file [v]select [y]copy");
+            ops.push_str(" [P]copy-file [v]select [y]copy [Y]copy+loc");
         }
 
         if !self.is_commit() {
