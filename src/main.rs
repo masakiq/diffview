@@ -1,8 +1,10 @@
 mod app;
 mod clipboard;
+mod components;
 mod config;
-mod git;
-mod ui;
+mod domain;
+mod infra;
+mod views;
 
 use anyhow::Result;
 use clap::Parser;
@@ -25,7 +27,7 @@ struct Args {
     #[arg(long, value_name = "TOOL")]
     tool: Option<String>,
 
-    /// Target commit-ish (e.g. hash, branch, tag). If omitted, working tree mode.
+    /// Target commit-ish (e.g. hash, branch, tag). If omitted, the working tree target.
     #[arg(value_name = "REV")]
     revision: Option<String>,
 }

@@ -1,6 +1,3 @@
-use anyhow::Result;
-use std::path::Path;
-
 #[derive(Debug, Clone)]
 pub struct GitFile {
     pub path: String,
@@ -39,28 +36,6 @@ impl GitFile {
             self.unstaged
         }
     }
-}
-
-pub fn get_status(repo_root: &Path) -> Result<Vec<GitFile>> {
-    let output = super::run_git(
-        &["status", "--porcelain", "--untracked-files=all"],
-        repo_root,
-    )?;
-    Ok(parse_status(&output))
-}
-
-pub fn get_commit_files(revision: &str, repo_root: &Path) -> Result<Vec<GitFile>> {
-    let output = super::run_git(
-        &[
-            "show",
-            "--format=",
-            "--name-status",
-            "--find-renames",
-            revision,
-        ],
-        repo_root,
-    )?;
-    Ok(parse_commit_name_status(&output))
 }
 
 pub fn parse_status(output: &str) -> Vec<GitFile> {

@@ -53,8 +53,8 @@ perf/scripts/startup.expect ./target/release/diffview --tool raw HEAD~1
 Notes:
 
 - It waits for one of these titles to appear: `Unstaged`, `Staged`, or `Files`.
-- `Unstaged` and `Staged` cover working-tree mode.
-- `Files` covers commit mode.
+- `Unstaged` and `Staged` cover the Working Tree target.
+- `Files` covers the Commit target.
 - If the UI labels change, this script must be updated.
 
 ### `perf/scripts/tree_burst.expect`
@@ -121,8 +121,8 @@ Notes:
 Purpose:
 
 - Builds the release binary unless told not to
-- Runs startup, burst, and single-step benchmarks for working-tree mode
-- Optionally runs the same benchmarks for commit mode
+- Runs startup, burst, and single-step benchmarks for the Working Tree target
+- Optionally runs the same benchmarks for the Commit target
 - Stores each benchmark result under `perf/results/<timestamp>/`
 
 This script is a benchmark orchestrator, not a conventional pass/fail integration test. It runs multiple end-to-end performance scenarios and records timing results, but it does not assert thresholds or return success/failure based on performance budgets.
@@ -146,7 +146,7 @@ Options:
 
 - `--bin PATH`: path to the `diffview` binary. Default: `./target/release/diffview`
 - `--tool TOOL`: diff tool to benchmark. Default: `raw`
-- `--commit-rev REV`: revision to benchmark in commit mode
+- `--commit-rev REV`: revision to benchmark under the Commit target
 - `--runs N`: number of `hyperfine` runs. Default: `20`
 - `--warmup N`: number of `hyperfine` warmup runs. Default: `3`
 - `--moves N`: move count for `tree_burst.expect`. Default: `200`
@@ -161,14 +161,14 @@ Output files:
 - `startup_worktree.txt` and `startup_worktree.json`
 - `tree_burst_worktree.txt` and `tree_burst_worktree.json`
 - `tree_single_step_worktree.txt` and `tree_single_step_worktree.json`
-- Commit-mode files with the same naming pattern when `--commit-rev` is provided
+- Commit-target files with the same naming pattern when `--commit-rev` is provided
 
 ## Recommended Workflow
 
 1. Build the release binary.
 2. Start with `--tool raw`.
 3. Run working-tree benchmarks first.
-4. Add `--commit-rev` for commit-mode benchmarks.
+4. Add `--commit-rev` for Commit-target benchmarks.
 5. Inspect the JSON files exported by `hyperfine`.
 6. Move on to `delta` or `difftastic` only after you have a raw baseline.
 

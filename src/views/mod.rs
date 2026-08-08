@@ -1,5 +1,4 @@
 pub mod diff;
-pub mod highlight;
 pub mod statusbar;
 pub mod tree;
 
@@ -8,7 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, TreePane};
+use crate::app::{ActiveView, App};
+use crate::domain::content::TreePane;
 
 pub fn render(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -22,7 +22,7 @@ pub fn render(f: &mut Frame, app: &App) {
     let main_area = vert[0];
     let status_area = vert[1];
 
-    if matches!(app.focus, Focus::DiffView | Focus::InlineSelect) {
+    if app.active_view() == ActiveView::Diff {
         diff::render(f, app, main_area);
         statusbar::render(f, app, status_area);
         return;
@@ -40,12 +40,12 @@ pub fn render(f: &mut Frame, app: &App) {
     let tree_area = horiz[0];
     let diff_area = horiz[1];
 
-    if app.is_commit_mode() {
+    if app.is_commit() {
         tree::render(f, app, tree_area, TreePane::Unstaged);
     } else {
         // Split tree area vertically into unstaged (top) and staged (bottom)
-        let unstaged_items = app.unstaged.visible.len() as u32 + 2; // +2 for border
-        let staged_items = app.staged.visible.len() as u32 + 2;
+        let unstaged_items = app.tree.unstaged.visible.len() as u32 + 2; // +2 for border
+        let staged_items = app.tree.staged.visible.len() as u32 + 2;
         let total = unstaged_items + staged_items;
 
         let tree_split = Layout::default()

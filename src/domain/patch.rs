@@ -1,72 +1,8 @@
-use anyhow::Result;
 use std::collections::HashSet;
-use std::path::Path;
 
-use super::diff::{DiffLine, Hunk};
+use crate::domain::diff::{DiffLine, Hunk};
 
-// ─── File-level operations ─────────────────────────────────────────────────
-
-pub fn stage_file(path: &str, repo_root: &Path) -> Result<()> {
-    super::run_git(&["add", path], repo_root)?;
-    Ok(())
-}
-
-/// Unstage a file from the index (restore --staged)
-pub fn unstage_file(path: &str, repo_root: &Path) -> Result<()> {
-    super::run_git(&["restore", "--staged", path], repo_root)?;
-    Ok(())
-}
-
-// ─── Hunk-level operations ─────────────────────────────────────────────────
-
-#[allow(dead_code)]
-pub fn stage_hunk(file_path: &str, hunk: &Hunk, repo_root: &Path) -> Result<()> {
-    let patch = build_hunk_patch(file_path, hunk);
-    super::run_git_with_stdin(&["apply", "--cached"], &patch, repo_root)?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn unstage_hunk(file_path: &str, hunk: &Hunk, repo_root: &Path) -> Result<()> {
-    let patch = build_hunk_patch(file_path, hunk);
-    super::run_git_with_stdin(&["apply", "--cached", "--reverse"], &patch, repo_root)?;
-    Ok(())
-}
-
-// ─── Line-level operations ─────────────────────────────────────────────────
-
-/// Stage selected lines within a hunk.
-/// `selected` contains indices into `hunk.lines`.
-pub fn stage_lines(
-    file_path: &str,
-    hunk: &Hunk,
-    selected: &HashSet<usize>,
-    repo_root: &Path,
-) -> Result<()> {
-    let patch = build_partial_patch(file_path, hunk, selected);
-    super::run_git_with_stdin(&["apply", "--cached"], &patch, repo_root)?;
-    Ok(())
-}
-
-/// Unstage selected lines within a hunk.
-///
-/// Builds a reverse partial patch directly (not using --reverse flag)
-/// because partial patch semantics require different handling for
-/// selected/non-selected lines in reverse direction.
-pub fn unstage_lines(
-    file_path: &str,
-    hunk: &Hunk,
-    selected: &HashSet<usize>,
-    repo_root: &Path,
-) -> Result<()> {
-    let patch = build_reverse_partial_patch(file_path, hunk, selected);
-    super::run_git_with_stdin(&["apply", "--cached"], &patch, repo_root)?;
-    Ok(())
-}
-
-// ─── Patch builders ────────────────────────────────────────────────────────
-
-fn build_hunk_patch(file_path: &str, hunk: &Hunk) -> String {
+pub fn build_hunk_patch(file_path: &str, hunk: &Hunk) -> String {
     let mut patch = String::new();
     patch.push_str(&format!("--- a/{}\n", file_path));
     patch.push_str(&format!("+++ b/{}\n", file_path));
@@ -94,7 +30,7 @@ fn build_hunk_patch(file_path: &str, hunk: &Hunk) -> String {
 ///   - Context lines → always kept as ` `
 ///
 /// Applied with: `git apply --cached`
-fn build_partial_patch(file_path: &str, hunk: &Hunk, selected: &HashSet<usize>) -> String {
+pub fn build_partial_patch(file_path: &str, hunk: &Hunk, selected: &HashSet<usize>) -> String {
     let mut body_lines: Vec<String> = Vec::new();
     let mut old_count: u32 = 0;
     let mut new_count: u32 = 0;
@@ -155,7 +91,11 @@ fn build_partial_patch(file_path: &str, hunk: &Hunk, selected: &HashSet<usize>) 
 ///   - Unselected `-` (Removed from HEAD) → omitted (don't restore)
 ///
 /// Applied with: `git apply --cached` (no --reverse flag)
-fn build_reverse_partial_patch(file_path: &str, hunk: &Hunk, selected: &HashSet<usize>) -> String {
+pub fn build_reverse_partial_patch(
+    file_path: &str,
+    hunk: &Hunk,
+    selected: &HashSet<usize>,
+) -> String {
     let mut body_lines: Vec<String> = Vec::new();
     let mut old_count: u32 = 0;
     let mut new_count: u32 = 0;
@@ -209,7 +149,7 @@ fn build_reverse_partial_patch(file_path: &str, hunk: &Hunk, selected: &HashSet<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::diff::{DiffLine, Hunk};
+    use crate::domain::diff::{DiffLine, Hunk};
 
     fn make_hunk() -> Hunk {
         Hunk {
