@@ -140,6 +140,7 @@ The trickiest part of the codebase. Two distinct patch builders:
 - Responsibilities are separated: pure logic in `src/domain/` (no I/O), external process/OS boundaries in `src/infra/`, per-screen key handler+render in `src/views/`, UI logic shared across views in `src/components/`, orchestration and state ownership (event loop, `TreeViewState`/`DiffViewState`, cross-view state) in `src/app/`.
 - When a change affects build steps, CLI options, or internal structure (types, modules, data flow), ask the user whether this file (`AGENTS.md` / `CLAUDE.md`) needs to be updated.
 - **REQUIRED**: When adding or removing any screen, pane, focus state, key binding, or feature, update `docs/reference.md` in the same PR/commit. This document is the shared vocabulary between users and AI agents — keeping it accurate is mandatory.
+- **REQUIRED**: No source file may exceed 500 lines. When a change would push a file past 500 lines, split it along the existing module boundaries (`domain/`, `infra/`, `components/`, `views/`, `app/`) before merging, rather than after.
 
 ## Configuration
 
